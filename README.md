@@ -14,6 +14,10 @@ de conteo).
 - Le asigna un ID de seguimiento para no contarla dos veces.
 - Cuenta cada botella que cruza una línea configurable.
 - Calcula la velocidad: botellas/minuto instantánea (ventana deslizante) y promedio.
+- Sirve un **tablero de control web** (`--tablero`): video en vivo con las
+  detecciones, contadores, estado de la línea y gráfico de velocidad, visible
+  desde el navegador de cualquier dispositivo de la red local.
+- Guarda un **registro de producción por minuto** en CSV diarios (`registros/`).
 - Genera un video anotado y un CSV con las estadísticas por cuadro.
 
 **Hoja de ruta:** detección de defectos (falta de cápsula, nivel de llenado
@@ -53,6 +57,30 @@ python -m contador_botellas \
 python -m contador_botellas --fuente 0 --mostrar
 ```
 
+**Con tablero de control web** (recomendado para producción):
+
+```bash
+python -m contador_botellas --fuente 0 --tablero
+```
+
+Al arrancar imprime las direcciones del tablero, por ejemplo:
+
+```
+Tablero de control disponible en:
+  → http://localhost:8000   (en esta computadora)
+  → http://192.168.1.34:8000   (desde otra compu o celular en la misma red)
+```
+
+El tablero muestra el video en vivo con las detecciones, botellas contadas,
+velocidad actual y promedio, el estado de la línea (PRODUCIENDO / SIN
+PRODUCCIÓN) y un gráfico de la velocidad de los últimos 15 minutos, con vista
+de tabla. Además, salvo que se pase `--sin-registro`, se guarda un CSV por día
+en `registros/` con la producción minuto a minuto — sirve como histórico de
+turnos.
+
+Para salir: tecla `q` (o `Esc`) sobre la ventana de video, o `Ctrl+C` en la
+consola.
+
 **Con una cámara IP:**
 
 ```bash
@@ -81,6 +109,10 @@ Duración procesada: 12.6 s
 | `--salida` | — | Video anotado de salida |
 | `--csv` | — | CSV con estadísticas por cuadro |
 | `--mostrar` | — | Ventana en vivo (tecla `q` para salir) |
+| `--tablero` | — | Tablero de control web en la red local |
+| `--puerto` | `8000` | Puerto del tablero web |
+| `--registro` | `registros` | Carpeta de los CSV diarios por minuto |
+| `--sin-registro` | — | No guardar el registro por minuto |
 | `--inspeccion` | — | Heurística experimental de nivel de llenado |
 | `--dispositivo` | auto | `cpu`, `0` (GPU CUDA), `mps` (Mac) |
 
@@ -99,6 +131,8 @@ contador_botellas/
 ├── contador.py     → pipeline: tracking + línea de conteo + anotación
 ├── detector.py     → detección YOLO → sv.Detections
 ├── velocidad.py    → botellas/min (ventana deslizante y promedio)
+├── tablero.py      → tablero de control web (video en vivo + estadísticas)
+├── registro.py     → CSV diarios de producción por minuto
 └── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 videos/             → videos de prueba de líneas de envasado
 ```

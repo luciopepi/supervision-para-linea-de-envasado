@@ -2,6 +2,7 @@
 
 import csv
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,8 @@ import supervision as sv
 
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
+from .registro import RegistroProduccion
+from .tablero import EstadoTablero
 from .velocidad import EstimadorVelocidad
 
 
@@ -69,12 +72,21 @@ class ContadorBotellas:
         ruta_csv: str | None = None,
         mostrar: bool = False,
         max_cuadros: int | None = None,
+        estado_tablero: EstadoTablero | None = None,
+        registro: RegistroProduccion | None = None,
     ) -> dict[str, float]:
         """Procesa la fuente cuadro a cuadro y devuelve el resumen final.
 
-        El resumen contiene `total`, `bpm_promedio` y `duracion_s`.
+        El resumen contiene `total`, `bpm_promedio` y `duracion_s`. Si se pasa
+        `estado_tablero`, publica cada cuadro anotado y las estadísticas para
+        el tablero web; si se pasa `registro`, anota la producción por minuto.
         """
         captura = self._abrir_fuente(fuente)
+        # Con cámara o stream el reloj de pared es la referencia de tiempo;
+        # con un archivo se usa el tiempo del video para que la velocidad no
+        # dependa de lo rápido que procese la computadora.
+        en_vivo = fuente.isdigit() or fuente.startswith(("rtsp://", "http://", "https://"))
+        inicio = time.monotonic()
         fps = captura.get(cv2.CAP_PROP_FPS) or 30.0
         ancho = int(captura.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto = int(captura.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -105,6 +117,7 @@ class ContadorBotellas:
             )
 
         numero_cuadro = 0
+        ultimo_cruce: float | None = None
         try:
             while True:
                 ok, cuadro = captura.read()
@@ -113,13 +126,19 @@ class ContadorBotellas:
                 numero_cuadro += 1
                 if max_cuadros and numero_cuadro > max_cuadros:
                     break
-                instante = numero_cuadro / fps
+                instante = time.monotonic() - inicio if en_vivo else numero_cuadro / fps
 
                 detecciones = self.detector.detectar(cuadro)
                 detecciones = rastreador.update_with_detections(detecciones)
                 entrantes, salientes = zona.trigger(detecciones)
                 cruces = int(np.sum(entrantes)) + int(np.sum(salientes))
                 velocidad.registrar_cruces(cruces, instante)
+                if cruces:
+                    ultimo_cruce = instante
+                if registro is not None:
+                    registro.registrar(
+                        cruces, velocidad.total, velocidad.promedio_botellas_por_minuto()
+                    )
 
                 alertas: dict[int, str] = {}
                 if self.inspector is not None:
@@ -151,16 +170,40 @@ class ContadorBotellas:
                             f"{velocidad.promedio_botellas_por_minuto():.1f}",
                         ]
                     )
+                if estado_tablero is not None:
+                    ok_jpeg, jpeg = cv2.imencode(
+                        ".jpg", cuadro, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                    )
+                    if ok_jpeg:
+                        sin_cruce = 1e9 if ultimo_cruce is None else instante - ultimo_cruce
+                        estado_tablero.publicar(
+                            jpeg.tobytes(),
+                            {
+                                "total": velocidad.total,
+                                "bpm": round(velocidad.botellas_por_minuto(), 1),
+                                "bpm_promedio": round(
+                                    velocidad.promedio_botellas_por_minuto(), 1
+                                ),
+                                "en_cuadro": len(detecciones),
+                                "segundos_sin_cruce": round(sin_cruce, 1),
+                                "hora": time.time(),
+                            },
+                        )
                 if mostrar:
                     cv2.imshow("Contador de botellas", cuadro)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                    tecla = cv2.waitKey(1) & 0xFF
+                    if tecla in (ord("q"), ord("Q"), 27):  # q o Esc
                         break
+        except KeyboardInterrupt:
+            print("\nDetenido con Ctrl+C.")
         finally:
             captura.release()
             if escritor is not None:
                 escritor.release()
             if archivo_csv is not None:
                 archivo_csv.close()
+            if registro is not None:
+                registro.cerrar(velocidad.total, velocidad.promedio_botellas_por_minuto())
             if mostrar:
                 cv2.destroyAllWindows()
 

@@ -1,6 +1,7 @@
 """Pipeline principal: detección + seguimiento + conteo + velocidad."""
 
 import csv
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -173,7 +174,15 @@ class ContadorBotellas:
     def _abrir_fuente(fuente: str) -> cv2.VideoCapture:
         """Abre cámara web (índice numérico), archivo de video o URL de stream."""
         if fuente.isdigit():
-            captura = cv2.VideoCapture(int(fuente))
+            print(f"Abriendo cámara {fuente}...")
+            # En Windows el backend por defecto (Media Foundation) puede
+            # colgarse minutos al abrir la webcam; DirectShow abre al instante.
+            if sys.platform == "win32":
+                captura = cv2.VideoCapture(int(fuente), cv2.CAP_DSHOW)
+                if not captura.isOpened():
+                    captura = cv2.VideoCapture(int(fuente))
+            else:
+                captura = cv2.VideoCapture(int(fuente))
         else:
             if not fuente.startswith(("rtsp://", "http://", "https://")):
                 if not Path(fuente).exists():

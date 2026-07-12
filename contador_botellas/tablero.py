@@ -152,6 +152,9 @@ PAGINA_HTML = """<!doctype html>
   .ev-valvula  { background: #4a3a14; color: #ffd98a; }
   .ev-estado   { background: #2c2c2a; color: var(--tinta-2); }
   .ev-entrenamiento { background: #2a1a4a; color: #c8b3ff; }
+  .alterna { background: var(--superficie-2); border: 1px solid var(--borde);
+             color: var(--tinta-2); border-radius: 8px; padding: 6px 14px; cursor: pointer;
+             font-size: 13px; font-weight: 700; text-decoration: none; float: right; }
   #aviso { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%);
     background: #262624; border: 1px solid var(--borde); border-radius: 10px;
     padding: 12px 22px; font-size: 17px; font-weight: 700; display: none; z-index: 20; }
@@ -199,7 +202,8 @@ PAGINA_HTML = """<!doctype html>
 
 <div class="abajo">
   <div class="tarjeta">
-    <h2>Velocidad de producción (botellas/min)</h2>
+    <h2>Velocidad de producción (botellas/min)
+        <a class="alterna" href="/registro.csv" download>⬇ CSV DEL DÍA</a></h2>
     <canvas id="grafico"></canvas>
   </div>
   <div class="tarjeta">
@@ -353,6 +357,7 @@ class _ManejadorTablero(BaseHTTPRequestHandler):
     """Sirve la página, el stream MJPEG, los datos JSON y recibe comandos."""
 
     estado: EstadoTablero  # asignado por iniciar_tablero
+    carpeta_registro: str | None = None  # carpeta de los CSV diarios
 
     def do_GET(self) -> None:  # noqa: N802 — nombre requerido por BaseHTTPRequestHandler
         """Atiende /, /datos y /video."""
@@ -371,6 +376,8 @@ class _ManejadorTablero(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
             self.wfile.write(cuerpo)
+        elif self.path == "/registro.csv":
+            self._servir_registro()
         elif self.path == "/video":
             self.send_response(200)
             self.send_header(
@@ -393,6 +400,27 @@ class _ManejadorTablero(BaseHTTPRequestHandler):
                 pass  # el navegador cerró la pestaña
         else:
             self.send_error(404)
+
+    def _servir_registro(self) -> None:
+        """Descarga el CSV de producción del día (endpoint /registro.csv)."""
+        from datetime import date
+        from pathlib import Path
+
+        if self.carpeta_registro is None:
+            self.send_error(404, "El registro esta desactivado (--sin-registro)")
+            return
+        nombre = f"produccion_{date.today().isoformat()}.csv"
+        ruta = Path(self.carpeta_registro) / nombre
+        if not ruta.exists():
+            self.send_error(404, "Todavia no hay registro de hoy (pasa alguna botella)")
+            return
+        cuerpo = ruta.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{nombre}"')
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
 
     def do_POST(self) -> None:  # noqa: N802 — nombre requerido por BaseHTTPRequestHandler
         """Recibe comandos de la HMI en /comando y los encola para el pipeline."""
@@ -432,9 +460,12 @@ class _ServidorTablero(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def iniciar_tablero(estado: EstadoTablero, puerto: int = 8000) -> _ServidorTablero:
+def iniciar_tablero(
+    estado: EstadoTablero, puerto: int = 8000, carpeta_registro: str | None = None
+) -> _ServidorTablero:
     """Levanta el servidor del tablero en un hilo demonio y lo devuelve."""
     _ManejadorTablero.estado = estado
+    _ManejadorTablero.carpeta_registro = carpeta_registro
     servidor = _ServidorTablero(("0.0.0.0", puerto), _ManejadorTablero)
     hilo = threading.Thread(target=servidor.serve_forever, daemon=True)
     hilo.start()

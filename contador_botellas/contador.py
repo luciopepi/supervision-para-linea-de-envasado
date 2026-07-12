@@ -12,7 +12,12 @@ import numpy as np
 import supervision as sv
 
 from .captura import CapturaEnVivo, configurar_camara
-from .clasificador import Clasificador, entrenar_en_hilo
+from .clasificador import (
+    MINIMO_MUESTRAS_POR_CLASE,
+    Clasificador,
+    contar_muestras,
+    entrenar_en_hilo,
+)
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
@@ -289,10 +294,26 @@ class ContadorBotellas:
                 estado.agregar_evento("estado", "Detección detenida")
             elif accion == "capturar" and cuadro is not None:
                 clase = self._nombre_clase_valido(str(comando.get("clase", "ok")))
-                cantidad = self._guardar_muestras(cuadro, detecciones, clase)
-                estado.agregar_evento(
-                    "muestra", f"{cantidad} imagen(es) guardada(s) en dataset/{clase}/"
+                # Con la detección en pausa no hay detecciones del pipeline:
+                # se corre una detección puntual para poder recortar botellas.
+                if detecciones is None or len(detecciones) == 0:
+                    detecciones = self.detector.detectar(cuadro)
+                recortes = self._guardar_muestras(cuadro, detecciones, clase)
+                totales = ", ".join(
+                    f"{c}: {n}" for c, n in contar_muestras(self.carpeta_muestras).items()
                 )
+                if recortes == 0:
+                    estado.agregar_evento(
+                        "muestra",
+                        f"⚠ No se detectó ninguna botella en el cuadro: no se "
+                        f"guardaron recortes en dataset/{clase}/. Acercá la botella.",
+                    )
+                else:
+                    estado.agregar_evento(
+                        "muestra",
+                        f"{recortes} recorte(s) de botella en dataset/{clase}/ "
+                        f"— total: {totales}",
+                    )
             elif accion == "probar_valvula":
                 if self.valvula is not None:
                     self.valvula.probar()
@@ -312,6 +333,17 @@ class ContadorBotellas:
         """
         if self._entrenando:
             estado.agregar_evento("entrenamiento", "Ya hay un entrenamiento en curso")
+            return detectando
+        # Validación previa: si faltan muestras se avisa sin pausar nada.
+        conteo = contar_muestras(self.carpeta_muestras)
+        validas = {c: n for c, n in conteo.items() if n >= MINIMO_MUESTRAS_POR_CLASE}
+        if len(validas) < 2:
+            estado.agregar_evento(
+                "entrenamiento",
+                f"Faltan muestras para entrenar: se necesitan 2 clases con "
+                f"{MINIMO_MUESTRAS_POR_CLASE}+ recortes. Hay: {conteo or 'ninguna'}. "
+                f"Usá MUESTRA OK / MUESTRA DEFECTO con una botella a la vista.",
+            )
             return detectando
         self._entrenando = True
         estado.agregar_evento(
@@ -350,14 +382,14 @@ class ContadorBotellas:
     ) -> int:
         """Guarda el cuadro completo y el recorte de cada botella en dataset/<clase>/.
 
-        Estas imágenes son la materia prima para entrenar el modelo propio de
-        defectos (ver README): se etiquetan y se entrena un YOLO con ellas.
+        El entrenamiento usa solo los recortes (`*_bot*.jpg`); el cuadro
+        completo queda como referencia. Devuelve cuántos recortes se guardaron.
         """
         carpeta = self.carpeta_muestras / clase
         carpeta.mkdir(parents=True, exist_ok=True)
         marca = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         cv2.imwrite(str(carpeta / f"{marca}_cuadro.jpg"), cuadro)
-        guardadas = 1
+        recortes = 0
         if detecciones is not None and len(detecciones) > 0:
             alto_cuadro, ancho_cuadro = cuadro.shape[:2]
             for i, caja in enumerate(detecciones.xyxy):
@@ -366,8 +398,8 @@ class ContadorBotellas:
                 x2, y2 = min(ancho_cuadro, x2), min(alto_cuadro, y2)
                 if x2 - x1 > 10 and y2 - y1 > 10:
                     cv2.imwrite(str(carpeta / f"{marca}_bot{i}.jpg"), cuadro[y1:y2, x1:x2])
-                    guardadas += 1
-        return guardadas
+                    recortes += 1
+        return recortes
 
     def _detectar_defectos(
         self, cuadro: np.ndarray, detecciones: sv.Detections

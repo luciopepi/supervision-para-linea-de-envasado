@@ -223,7 +223,8 @@ def main() -> None:
     estado = None
     if args.tablero:
         estado = EstadoTablero()
-        iniciar_tablero(estado, args.puerto)
+        carpeta_registro = None if args.sin_registro else args.registro
+        iniciar_tablero(estado, args.puerto, carpeta_registro=carpeta_registro)
         print(f"\nTablero de control disponible en:")
         print(f"  → http://localhost:{args.puerto}   (en esta computadora)")
         print(f"  → http://{ip_local()}:{args.puerto}   (desde otra compu o celular en la misma red)")

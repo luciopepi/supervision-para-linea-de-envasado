@@ -2,7 +2,9 @@
 
 import argparse
 import socket
+from pathlib import Path
 
+from .clasificador import Clasificador
 from .contador import ConfiguracionLinea, ContadorBotellas
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
@@ -152,6 +154,11 @@ def crear_parser() -> argparse.ArgumentParser:
         help="Carpeta donde guardar las muestras capturadas desde la HMI",
     )
     parser.add_argument(
+        "--modelos",
+        default="modelos",
+        help="Carpeta del clasificador de defectos entrenado en el equipo",
+    )
+    parser.add_argument(
         "--iniciar-detenido",
         action="store_true",
         help="Arrancar con la detección en pausa (se inicia desde la HMI)",
@@ -188,6 +195,13 @@ def main() -> None:
         duracion_ms=args.valvula_duracion,
         protocolo=args.valvula_protocolo,
     )
+    # Si ya hay un clasificador entrenado en el equipo, se carga solo.
+    clasificador = None
+    ruta_clasificador = Path(args.modelos) / "clasificador.pt"
+    if ruta_clasificador.exists():
+        clasificador = Clasificador(ruta_clasificador)
+        print(f"Clasificador de defectos cargado: {ruta_clasificador}")
+
     contador = ContadorBotellas(
         detector=detector,
         linea=linea,
@@ -196,6 +210,8 @@ def main() -> None:
         valvula=valvula,
         clases_defecto=set(args.clases_defecto or []),
         carpeta_muestras=args.dataset,
+        carpeta_modelos=args.modelos,
+        clasificador=clasificador,
     )
 
     try:

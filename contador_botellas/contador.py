@@ -12,6 +12,7 @@ import numpy as np
 import supervision as sv
 
 from .captura import CapturaEnVivo, configurar_camara
+from .clasificador import Clasificador, entrenar_en_hilo
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
@@ -64,6 +65,8 @@ class ContadorBotellas:
         valvula: ValvulaDescarte | None = None,
         clases_defecto: set[int] | None = None,
         carpeta_muestras: str = "dataset",
+        carpeta_modelos: str = "modelos",
+        clasificador: Clasificador | None = None,
     ) -> None:
         """Guarda los componentes del pipeline; el estado se crea en `procesar`."""
         self.detector = detector
@@ -73,6 +76,9 @@ class ContadorBotellas:
         self.valvula = valvula
         self.clases_defecto = clases_defecto or set()
         self.carpeta_muestras = Path(carpeta_muestras)
+        self.carpeta_modelos = Path(carpeta_modelos)
+        self.clasificador = clasificador
+        self._entrenando = False
 
     def procesar(
         self,
@@ -282,7 +288,7 @@ class ContadorBotellas:
                 detectando = False
                 estado.agregar_evento("estado", "Detección detenida")
             elif accion == "capturar" and cuadro is not None:
-                clase = str(comando.get("clase", "ok"))
+                clase = self._nombre_clase_valido(str(comando.get("clase", "ok")))
                 cantidad = self._guardar_muestras(cuadro, detecciones, clase)
                 estado.agregar_evento(
                     "muestra", f"{cantidad} imagen(es) guardada(s) en dataset/{clase}/"
@@ -294,7 +300,50 @@ class ContadorBotellas:
                     estado.agregar_evento("valvula", f"Prueba de válvula ({modo})")
                 else:
                     estado.agregar_evento("valvula", "Válvula no configurada (--valvula-puerto)")
+            elif accion == "entrenar":
+                detectando = self._iniciar_entrenamiento(estado, detectando)
         return detectando
+
+    def _iniciar_entrenamiento(self, estado: EstadoTablero, detectando: bool) -> bool:
+        """Lanza el entrenamiento del clasificador en segundo plano.
+
+        Pausa la detección mientras entrena para dejarle la CPU al
+        entrenamiento; al terminar carga el modelo nuevo en caliente.
+        """
+        if self._entrenando:
+            estado.agregar_evento("entrenamiento", "Ya hay un entrenamiento en curso")
+            return detectando
+        self._entrenando = True
+        estado.agregar_evento(
+            "entrenamiento", "Entrenamiento iniciado (la detección queda en pausa)"
+        )
+
+        def al_terminar(ruta) -> None:
+            """Carga el clasificador recién entrenado y avisa en la HMI."""
+            if ruta is not None:
+                try:
+                    self.clasificador = Clasificador(ruta)
+                    estado.agregar_evento(
+                        "entrenamiento",
+                        "Modelo listo: tocá INICIAR DETECCIÓN para inspeccionar",
+                    )
+                except Exception as error:
+                    estado.agregar_evento("entrenamiento", f"Error al cargar modelo: {error}")
+            self._entrenando = False
+
+        entrenar_en_hilo(
+            self.carpeta_muestras,
+            self.carpeta_modelos,
+            informar=lambda mensaje: estado.agregar_evento("entrenamiento", mensaje),
+            al_terminar=al_terminar,
+        )
+        return False
+
+    @staticmethod
+    def _nombre_clase_valido(clase: str) -> str:
+        """Convierte el nombre de clase de la HMI en un nombre de carpeta seguro."""
+        limpio = "".join(c for c in clase.lower().strip() if c.isalnum() or c in "_-")
+        return limpio or "defecto"
 
     def _guardar_muestras(
         self, cuadro: np.ndarray, detecciones: sv.Detections | None, clase: str
@@ -323,13 +372,29 @@ class ContadorBotellas:
     def _detectar_defectos(
         self, cuadro: np.ndarray, detecciones: sv.Detections
     ) -> dict[int, str]:
-        """Junta alertas de defecto por tracker_id: clases del modelo + heurística."""
+        """Junta alertas de defecto por tracker_id: clasificador entrenado,
+        clases del modelo detector y heurística de inspección."""
         alertas: dict[int, str] = {}
-        if self.clases_defecto and detecciones.tracker_id is not None:
+        if detecciones.tracker_id is None:
+            return alertas
+        if self.clasificador is not None:
+            alto_cuadro, ancho_cuadro = cuadro.shape[:2]
+            for caja, tracker_id in zip(detecciones.xyxy, detecciones.tracker_id):
+                x1, y1, x2, y2 = (int(v) for v in caja)
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(ancho_cuadro, x2), min(alto_cuadro, y2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                clase = self.clasificador.clasificar_botella(
+                    cuadro[y1:y2, x1:x2], int(tracker_id)
+                )
+                if clase is not None and clase != "ok":
+                    alertas[int(tracker_id)] = clase
+        if self.clases_defecto:
             nombres = self.detector.nombres_clases
             for clase_id, tracker_id in zip(detecciones.class_id, detecciones.tracker_id):
                 if int(clase_id) in self.clases_defecto:
-                    alertas[int(tracker_id)] = str(nombres.get(int(clase_id), clase_id))
+                    alertas.setdefault(int(tracker_id), str(nombres.get(int(clase_id), clase_id)))
         if self.inspector is not None:
             for resultado in self.inspector.inspeccionar(cuadro, detecciones):
                 if resultado.alerta:
@@ -396,6 +461,8 @@ class ContadorBotellas:
                 "en_cuadro": len(detecciones) if detecciones is not None else 0,
                 "defectos": defectos_total,
                 "detectando": detectando,
+                "entrenando": self._entrenando,
+                "clasificador_activo": self.clasificador is not None,
                 "valvula": valvula_info,
                 "segundos_sin_cruce": round(sin_cruce, 1),
                 "hora": time.time(),

@@ -206,35 +206,50 @@ contador_botellas/
 ├── tablero.py      → HMI táctil web (video en vivo, botones, eventos, gráfico)
 ├── captura.py      → hilo de captura de cámara (resolución, sin retraso)
 ├── salidas.py      → válvula de descarte por relé USB (o modo simulado)
+├── clasificador.py → entrenamiento y clasificación de defectos en el equipo
 ├── registro.py     → CSV diarios de producción por minuto
 └── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 videos/             → videos de prueba de líneas de envasado
 ```
 
-## Entrenar un modelo propio
+## Detección de defectos: entrenar desde la HMI
 
-El modelo preentrenado (COCO) detecta botellas genéricas y funciona muy bien
-para contar. Para detectar **defectos** (falta de cápsula, nivel bajo, botella
-vacía) hace falta un modelo entrenado con imágenes de **tu línea real**:
+El sistema aprende a distinguir **tus** botellas directamente en el equipo,
+sin servicios externos. El detector encuentra cada botella; un clasificador
+entrenado con tus muestras decide si es `ok` o qué defecto tiene (falta de
+cápsula, sin etiqueta, botella distinta, nivel bajo...).
 
-1. **Capturar imágenes** de la línea con la cámara definitiva, en las
-   condiciones reales de luz. La forma más fácil es usar los botones
-   **MUESTRA OK / MUESTRA DEFECTO** de la HMI, que guardan todo en `dataset/`.
-   Incluir ejemplos de cada defecto (aunque haya que provocarlos a propósito).
-   Unas 200–500 imágenes es un buen comienzo.
-2. **Etiquetar** con [Roboflow](https://roboflow.com) (gratis para proyectos
-   chicos) con clases como: `botella_ok`, `sin_capsula`, `nivel_bajo`, `vacia`.
-3. **Entrenar** un YOLO con esas etiquetas (en Roboflow, Google Colab o local):
-   ```bash
-   yolo train model=yolov8n.pt data=dataset/data.yaml epochs=100 imgsz=640
-   ```
-4. **Usar el modelo propio** en este sistema:
-   ```bash
-   python -m contador_botellas --fuente 0 --modelo runs/detect/train/weights/best.pt --clases 0 1 2 3
-   ```
+**Flujo completo desde la pantalla:**
 
-Con eso, cada botella detectada trae su clase (`sin_capsula`, etc.) y el
-módulo `inspeccion.py` puede convertirlas en alertas de producción.
+1. **Capturar muestras**: con una botella buena pasando frente a la cámara,
+   tocá **MUESTRA OK** varias veces (guarda el recorte de cada botella en
+   `dataset/ok/`). Después pasá la botella con el defecto y tocá
+   **MUESTRA DEFECTO** — te pregunta el nombre (`sin_capsula`, `sin_etiqueta`,
+   `botella_distinta`, o el que quieras) y guarda en esa carpeta. Podés crear
+   tantos tipos de defecto como necesites.
+   - ⚠ El botón guarda el recorte de **todas** las botellas visibles en ese
+     momento: capturá con un solo tipo de botella frente a la cámara.
+   - Mínimo **10 recortes por clase** (el sistema lo exige); con 30–50 por
+     clase funciona mucho mejor. Variá posición, ángulo y luz.
+2. **Entrenar**: tocá **🧠 ENTRENAR MODELO**. La detección se pausa, el
+   entrenamiento corre en el equipo (unos minutos en CPU) y el avance se ve
+   en Eventos. Al terminar, el modelo queda guardado en
+   `modelos/clasificador.pt` y **se activa solo**.
+3. **Inspeccionar**: tocá INICIAR DETECCIÓN. Cada botella que pasa se
+   clasifica; toda clase distinta de `ok` se marca en la imagen, suma al
+   contador de **defectos descartados** y dispara la válvula al cruzar la
+   línea.
+
+El modelo queda en `modelos/` y se carga automáticamente en los próximos
+arranques. Para re-entrenar con más muestras, tocá el botón de nuevo (dice
+RE-ENTRENAR). Si el equipo tiene internet, el entrenamiento parte de un
+modelo preentrenado (mejor con pocas muestras); sin internet entrena desde
+cero (juntá más muestras en ese caso).
+
+**Defectos muy finos** (etiqueta apenas torcida, milímetros de nivel de
+llenado): son alcanzables con el mismo flujo pero exigen más muestras (100+
+por clase), cámara fija bien posicionada e iluminación constante — como en
+los equipos industriales, la luz estable es el 80% del éxito.
 
 ## Notas
 

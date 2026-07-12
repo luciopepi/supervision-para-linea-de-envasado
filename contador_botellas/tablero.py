@@ -113,8 +113,12 @@ PAGINA_HTML = """<!doctype html>
   @media (max-width: 900px) { .rejilla { grid-template-columns: 1fr; } }
   .tarjeta { background: var(--superficie); border: 1px solid var(--borde);
              border-radius: 12px; padding: 12px; min-height: 0; }
-  .video { display: flex; align-items: center; justify-content: center; }
-  .video img { max-width: 100%; max-height: 100%; border-radius: 8px; background: #000; }
+  /* La imagen va posicionada de forma absoluta dentro de la tarjeta: así su
+     tamaño natural nunca agranda la fila de la grilla ni pisa los botones. */
+  .video { position: relative; min-height: 240px; }
+  .video img { position: absolute; inset: 12px; width: calc(100% - 24px);
+               height: calc(100% - 24px); object-fit: contain;
+               border-radius: 8px; background: #000; }
   .fichas { display: grid; gap: 12px; grid-auto-rows: 1fr; }
   .ficha { display: flex; flex-direction: column; justify-content: center; }
   .ficha .rotulo { color: var(--tinta-2); font-size: 13px; letter-spacing: .07em;
@@ -122,8 +126,8 @@ PAGINA_HTML = """<!doctype html>
   .ficha .valor { font-size: clamp(34px, 4.5vw, 52px); font-weight: 800; line-height: 1.05; }
   .ficha .unidad { color: var(--tenue); font-size: 15px; font-weight: 500; }
   .ficha.defecto .valor { color: var(--critico); }
-  .botonera { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 12px; }
-  @media (max-width: 900px) { .botonera { grid-template-columns: 1fr 1fr; } }
+  .botonera { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 1100px) { .botonera { grid-template-columns: 1fr 1fr; } }
   button.grande { border: 1px solid var(--borde); border-radius: 12px; cursor: pointer;
     min-height: 76px; font: inherit; font-size: 19px; font-weight: 800; letter-spacing: .03em;
     color: var(--tinta); background: var(--superficie-2); padding: 10px 14px;
@@ -147,6 +151,7 @@ PAGINA_HTML = """<!doctype html>
   .ev-muestra  { background: #14304a; color: #9dc8ff; }
   .ev-valvula  { background: #4a3a14; color: #ffd98a; }
   .ev-estado   { background: #2c2c2a; color: var(--tinta-2); }
+  .ev-entrenamiento { background: #2a1a4a; color: #c8b3ff; }
   #aviso { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%);
     background: #262624; border: 1px solid var(--borde); border-radius: 10px;
     padding: 12px 22px; font-size: 17px; font-weight: 700; display: none; z-index: 20; }
@@ -188,6 +193,7 @@ PAGINA_HTML = """<!doctype html>
   </button>
   <button class="grande" id="btn-ok"><span class="icono">📷</span>MUESTRA OK</button>
   <button class="grande" id="btn-defecto"><span class="icono">⚠️</span>MUESTRA DEFECTO</button>
+  <button class="grande" id="btn-entrenar"><span class="icono">🧠</span><span id="texto-entrenar">ENTRENAR MODELO</span></button>
   <button class="grande" id="btn-valvula"><span class="icono">💨</span>PROBAR VÁLVULA</button>
 </div>
 
@@ -230,10 +236,22 @@ $("btn-marcha").addEventListener("click", () => {
   comando({accion: detectando ? "detener" : "iniciar"},
           detectando ? "Detección detenida" : "Detección iniciada");
 });
+let ultimaClaseDefecto = "defecto";
 $("btn-ok").addEventListener("click", () =>
   comando({accion: "capturar", clase: "ok"}, "Muestra OK guardada"));
-$("btn-defecto").addEventListener("click", () =>
-  comando({accion: "capturar", clase: "defecto"}, "Muestra de DEFECTO guardada"));
+$("btn-defecto").addEventListener("click", () => {
+  // Permite tipos de defecto propios: sin_capsula, sin_etiqueta, botella_distinta…
+  const clase = prompt("Nombre del defecto (una palabra):", ultimaClaseDefecto);
+  if (clase === null) return;
+  ultimaClaseDefecto = clase.trim() || "defecto";
+  comando({accion: "capturar", clase: ultimaClaseDefecto},
+          "Muestra de " + ultimaClaseDefecto.toUpperCase() + " guardada");
+});
+$("btn-entrenar").addEventListener("click", () => {
+  if (confirm("¿Entrenar el modelo con las muestras capturadas?\\n" +
+              "La detección queda en pausa mientras entrena (varios minutos)."))
+    comando({accion: "entrenar"}, "Entrenamiento iniciado");
+});
 $("btn-valvula").addEventListener("click", () =>
   comando({accion: "probar_valvula"}, "Probando válvula…"));
 
@@ -250,6 +268,11 @@ async function actualizar() {
     const r = await fetch("/datos", {cache: "no-store"});
     const d = await r.json();
     detectando = !!d.detectando; pintarMarcha();
+    const entrenando = !!d.entrenando;
+    $("btn-entrenar").disabled = entrenando;
+    $("btn-entrenar").style.opacity = entrenando ? 0.5 : 1;
+    $("texto-entrenar").textContent = entrenando ? "ENTRENANDO…" :
+      (d.clasificador_activo ? "RE-ENTRENAR" : "ENTRENAR MODELO");
     $("total").textContent = d.total ?? 0;
     $("bpm").innerHTML = (d.bpm ?? 0).toFixed(0) + ' <span class="unidad">bot/min</span>';
     $("defectos").textContent = d.defectos ?? 0;

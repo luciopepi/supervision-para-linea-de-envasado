@@ -7,6 +7,7 @@ from .contador import ConfiguracionLinea, ContadorBotellas
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
+from .salidas import ValvulaDescarte
 from .tablero import EstadoTablero, iniciar_tablero
 
 
@@ -103,6 +104,58 @@ def crear_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="No guardar el registro de producción por minuto",
     )
+    parser.add_argument(
+        "--resolucion",
+        default="1280x720",
+        help='Resolución pedida a la cámara web, formato "1280x720"',
+    )
+    parser.add_argument(
+        "--tamano-inferencia",
+        type=int,
+        default=640,
+        help="Tamaño de imagen para la red (480 o 416 = más fluido en CPU)",
+    )
+    parser.add_argument(
+        "--clases-defecto",
+        type=int,
+        nargs="*",
+        default=None,
+        help="IDs de clases del modelo propio que son defectos (activan el descarte)",
+    )
+    parser.add_argument(
+        "--valvula-puerto",
+        default=None,
+        help='Puerto serie del relé de la válvula de descarte (ej. "COM3"). '
+        "Sin este parámetro la válvula queda en modo simulado.",
+    )
+    parser.add_argument(
+        "--valvula-retardo",
+        type=int,
+        default=500,
+        help="Milisegundos entre que la botella cruza la línea y el soplido",
+    )
+    parser.add_argument(
+        "--valvula-duracion",
+        type=int,
+        default=300,
+        help="Milisegundos que dura el soplido de descarte",
+    )
+    parser.add_argument(
+        "--valvula-protocolo",
+        choices=["arduino", "lcus"],
+        default="arduino",
+        help="Protocolo del relé USB: arduino (bytes '1'/'0') o lcus (LCUS-1/2)",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="dataset",
+        help="Carpeta donde guardar las muestras capturadas desde la HMI",
+    )
+    parser.add_argument(
+        "--iniciar-detenido",
+        action="store_true",
+        help="Arrancar con la detección en pausa (se inicia desde la HMI)",
+    )
     return parser
 
 
@@ -125,15 +178,31 @@ def main() -> None:
         confianza=args.confianza,
         clases=args.clases,
         dispositivo=args.dispositivo,
+        tamano_inferencia=args.tamano_inferencia,
     )
     linea = ConfiguracionLinea(orientacion=args.linea, posicion=args.posicion_linea)
     inspector = InspectorBotellas() if args.inspeccion else None
+    valvula = ValvulaDescarte(
+        puerto=args.valvula_puerto,
+        retardo_ms=args.valvula_retardo,
+        duracion_ms=args.valvula_duracion,
+        protocolo=args.valvula_protocolo,
+    )
     contador = ContadorBotellas(
         detector=detector,
         linea=linea,
         ventana_velocidad=args.ventana_velocidad,
         inspector=inspector,
+        valvula=valvula,
+        clases_defecto=set(args.clases_defecto or []),
+        carpeta_muestras=args.dataset,
     )
+
+    try:
+        ancho_res, alto_res = (int(v) for v in args.resolucion.lower().split("x"))
+        resolucion = (ancho_res, alto_res)
+    except ValueError:
+        raise SystemExit(f'--resolucion inválida: "{args.resolucion}" (usar p. ej. 1280x720)')
 
     estado = None
     if args.tablero:
@@ -156,10 +225,13 @@ def main() -> None:
         max_cuadros=args.max_cuadros,
         estado_tablero=estado,
         registro=registro,
+        resolucion=resolucion,
+        iniciar_detenido=args.iniciar_detenido,
     )
 
     print("\n===== RESUMEN =====")
     print(f"Botellas contadas : {int(resumen['total'])}")
+    print(f"Defectos descartados: {int(resumen['defectos'])}")
     print(f"Velocidad promedio: {resumen['bpm_promedio']:.1f} botellas/min")
     print(f"Duración procesada: {resumen['duracion_s']:.1f} s")
 

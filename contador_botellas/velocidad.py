@@ -41,14 +41,14 @@ class EstimadorVelocidad:
         """Velocidad instantánea (botellas/min) sobre la ventana deslizante.
 
         Antes de completarse la primera ventana se usa el tiempo transcurrido
-        real para no inflar la estimación.
+        real, con un piso de 10 segundos: sin ese piso, dos cruces casi
+        simultáneos al arrancar producen picos irreales de miles de bot/min.
         """
         if not self._cruces:
             return 0.0
-        transcurrido = min(self.ventana_segundos, self._ultimo_instante - self._cruces[0])
-        # Con un solo cruce (o cruces simultáneos) no hay intervalo medible.
-        if transcurrido <= 0:
-            return 0.0
+        transcurrido = min(
+            self.ventana_segundos, max(10.0, self._ultimo_instante - self._cruces[0])
+        )
         return len(self._cruces) * 60.0 / transcurrido
 
     def promedio_botellas_por_minuto(self) -> float:

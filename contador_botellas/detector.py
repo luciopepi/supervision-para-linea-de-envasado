@@ -23,14 +23,21 @@ class DetectorBotellas:
         confianza: float = 0.3,
         clases: list[int] | None = None,
         dispositivo: str | None = None,
+        tamano_inferencia: int = 640,
     ) -> None:
-        """Carga el modelo YOLO y guarda los parámetros de inferencia."""
+        """Carga el modelo YOLO y guarda los parámetros de inferencia.
+
+        `tamano_inferencia` es el lado mayor al que se reescala la imagen para
+        la red: 640 es el estándar; 480 o 416 aceleran mucho en CPU con poca
+        pérdida de precisión cuando las botellas se ven grandes en el cuadro.
+        """
         from ultralytics import YOLO  # import perezoso: tarda en cargar
 
         self.modelo = YOLO(ruta_modelo)
         self.confianza = confianza
         self.clases = clases if clases is not None else [CLASE_BOTELLA_COCO]
         self.dispositivo = dispositivo
+        self.tamano_inferencia = tamano_inferencia
 
     @property
     def nombres_clases(self) -> dict[int, str]:
@@ -44,6 +51,7 @@ class DetectorBotellas:
             conf=self.confianza,
             classes=self.clases,
             device=self.dispositivo,
+            imgsz=self.tamano_inferencia,
             verbose=False,
         )[0]
         return sv.Detections.from_ultralytics(resultado)

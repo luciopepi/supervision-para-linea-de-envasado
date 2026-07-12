@@ -14,9 +14,14 @@ de conteo).
 - Le asigna un ID de seguimiento para no contarla dos veces.
 - Cuenta cada botella que cruza una línea configurable.
 - Calcula la velocidad: botellas/minuto instantánea (ventana deslizante) y promedio.
-- Sirve un **tablero de control web** (`--tablero`): video en vivo con las
-  detecciones, contadores, estado de la línea y gráfico de velocidad, visible
-  desde el navegador de cualquier dispositivo de la red local.
+- Sirve una **HMI táctil web** (`--tablero`): video en vivo con las
+  detecciones, contadores grandes, botones INICIAR/DETENER, captura de
+  muestras para entrenamiento, prueba de válvula, eventos y gráfico de
+  velocidad — pensada para una pantalla táctil junto a la línea, visible
+  desde cualquier dispositivo de la red local.
+- Comanda una **electroválvula de descarte** por relé USB (`--valvula-puerto`),
+  con retardo y duración de soplido configurables; sin hardware funciona en
+  modo simulado.
 - Guarda un **registro de producción por minuto** en CSV diarios (`registros/`).
 - Genera un video anotado y un CSV con las estadísticas por cuadro.
 
@@ -109,12 +114,79 @@ Duración procesada: 12.6 s
 | `--salida` | — | Video anotado de salida |
 | `--csv` | — | CSV con estadísticas por cuadro |
 | `--mostrar` | — | Ventana en vivo (tecla `q` para salir) |
-| `--tablero` | — | Tablero de control web en la red local |
+| `--tablero` | — | HMI táctil web en la red local |
 | `--puerto` | `8000` | Puerto del tablero web |
 | `--registro` | `registros` | Carpeta de los CSV diarios por minuto |
 | `--sin-registro` | — | No guardar el registro por minuto |
+| `--resolucion` | `1280x720` | Resolución pedida a la cámara web |
+| `--tamano-inferencia` | `640` | Tamaño de imagen para la red (480/416 = más fluido en CPU) |
+| `--iniciar-detenido` | — | Arrancar en pausa; se inicia desde la HMI |
+| `--dataset` | `dataset` | Carpeta de las muestras capturadas desde la HMI |
+| `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
+| `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
+| `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
+| `--valvula-duracion` | `300` | ms que dura el soplido |
+| `--valvula-protocolo` | `arduino` | `arduino` (bytes '1'/'0') o `lcus` (relé LCUS-1/2) |
 | `--inspeccion` | — | Heurística experimental de nivel de llenado |
 | `--dispositivo` | auto | `cpu`, `0` (GPU CUDA), `mps` (Mac) |
+
+### La HMI (pantalla táctil)
+
+Con `--tablero`, la interfaz web tiene botones grandes pensados para tocar:
+
+- **▶ INICIAR / ⏹ DETENER DETECCIÓN**: arranca o pausa el conteo (el video
+  sigue en vivo). Con `--iniciar-detenido` el sistema arranca en pausa.
+- **📷 MUESTRA OK / ⚠️ MUESTRA DEFECTO**: guarda el cuadro actual y el recorte
+  de cada botella en `dataset/ok/` o `dataset/defecto/`. Así se junta el
+  material para entrenar el modelo de defectos directamente desde la línea:
+  cuando pase una botella sin cápsula o mal llenada, tocá MUESTRA DEFECTO.
+- **💨 PROBAR VÁLVULA**: dispara un pulso de la válvula para verificar el
+  conexionado.
+- **Eventos**: cada descarte, muestra o cambio de estado queda listado con su hora.
+
+Para pantalla completa en la PC táctil: abrir el navegador con `F11`, o crear
+un acceso directo de Chrome/Edge con `--kiosk http://localhost:8000`.
+
+### La válvula de descarte
+
+La forma más simple de comandar la electroválvula desde Windows es un **relé
+USB**: un Arduino (u otro micro) con módulo relé, o un relé USB tipo LCUS-1.
+Se configura con `--valvula-puerto COM3` (ver el número de puerto en el
+Administrador de dispositivos de Windows). El flujo es:
+
+1. El modelo detecta una botella con clase de defecto (`--clases-defecto`) o
+   la heurística de inspección la marca.
+2. Cuando esa botella **cruza la línea de conteo**, se programa el soplido:
+   espera `--valvula-retardo` ms (el tiempo de viaje hasta la válvula, a
+   calibrar en la línea) y activa la salida `--valvula-duracion` ms.
+3. Cada descarte queda registrado como evento en la HMI.
+
+Sketch de Arduino de ejemplo (protocolo `arduino`, relé en el pin 7):
+
+```cpp
+void setup() { Serial.begin(9600); pinMode(7, OUTPUT); }
+void loop() {
+  if (Serial.available()) {
+    char c = Serial.read();
+    digitalWrite(7, c == '1' ? HIGH : LOW);
+  }
+}
+```
+
+Sin `--valvula-puerto`, la válvula queda en **modo simulado**: los descartes
+se registran como eventos (ideal para probar la lógica antes de armar el
+hardware).
+
+### Si la cámara se ve entrecortada o en baja resolución
+
+- La resolución se pide con `--resolucion 1280x720` (por defecto). Si la
+  cámara no la soporta, queda en el modo más cercano.
+- La fluidez depende de la velocidad de detección: en una PC sin GPU, probá
+  `--tamano-inferencia 480` (o `416`) — acelera mucho con muy poca pérdida de
+  precisión cuando las botellas se ven grandes.
+- La lectura de la cámara corre en un hilo propio: la imagen nunca queda
+  atrasada; si la PC no llega a procesar todos los cuadros, descarta los
+  viejos y muestra siempre el actual.
 
 ### Consejo: dónde poner la línea de conteo
 
@@ -131,7 +203,9 @@ contador_botellas/
 ├── contador.py     → pipeline: tracking + línea de conteo + anotación
 ├── detector.py     → detección YOLO → sv.Detections
 ├── velocidad.py    → botellas/min (ventana deslizante y promedio)
-├── tablero.py      → tablero de control web (video en vivo + estadísticas)
+├── tablero.py      → HMI táctil web (video en vivo, botones, eventos, gráfico)
+├── captura.py      → hilo de captura de cámara (resolución, sin retraso)
+├── salidas.py      → válvula de descarte por relé USB (o modo simulado)
 ├── registro.py     → CSV diarios de producción por minuto
 └── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 videos/             → videos de prueba de líneas de envasado
@@ -144,8 +218,10 @@ para contar. Para detectar **defectos** (falta de cápsula, nivel bajo, botella
 vacía) hace falta un modelo entrenado con imágenes de **tu línea real**:
 
 1. **Capturar imágenes** de la línea con la cámara definitiva, en las
-   condiciones reales de luz. Incluir ejemplos de cada defecto (aunque haya
-   que provocarlos a propósito). Unas 200–500 imágenes es un buen comienzo.
+   condiciones reales de luz. La forma más fácil es usar los botones
+   **MUESTRA OK / MUESTRA DEFECTO** de la HMI, que guardan todo en `dataset/`.
+   Incluir ejemplos de cada defecto (aunque haya que provocarlos a propósito).
+   Unas 200–500 imágenes es un buen comienzo.
 2. **Etiquetar** con [Roboflow](https://roboflow.com) (gratis para proyectos
    chicos) con clases como: `botella_ok`, `sin_capsula`, `nivel_bajo`, `vacia`.
 3. **Entrenar** un YOLO con esas etiquetas (en Roboflow, Google Colab o local):

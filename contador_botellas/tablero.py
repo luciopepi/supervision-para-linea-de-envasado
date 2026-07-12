@@ -164,6 +164,8 @@ PAGINA_HTML = """<!doctype html>
 <header>
   <h1>LÍNEA DE ENVASADO</h1>
   <span class="chip" id="chip-estado"><span class="punto" style="background:var(--tenue)"></span><span id="chip-texto">EN PAUSA</span></span>
+  <span class="chip" id="chip-sku" style="cursor:pointer" title="Tocar para cambiar de producto">
+    <span class="punto" style="background:var(--serie)"></span><span>SKU: <b id="sku-nombre">general</b> ✎</span></span>
   <span class="chip" id="chip-valvula" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>VÁLVULA SIMULADA</span></span>
   <span class="hora" id="hora">—</span>
 </header>
@@ -190,6 +192,9 @@ PAGINA_HTML = """<!doctype html>
   </div>
 </div>
 
+<div id="muestras-linea" style="color:var(--tinta-2); font-size:14px; padding:0 4px;">
+  Muestras del SKU: —</div>
+
 <div class="botonera">
   <button class="grande iniciar" id="btn-marcha">
     <span class="icono" id="icono-marcha">▶</span><span id="texto-marcha">INICIAR DETECCIÓN</span>
@@ -203,7 +208,7 @@ PAGINA_HTML = """<!doctype html>
 <div class="abajo">
   <div class="tarjeta">
     <h2>Velocidad de producción (botellas/min)
-        <a class="alterna" href="/registro.csv" download>⬇ CSV DEL DÍA</a></h2>
+        <button class="alterna" id="btn-csv">⬇ DESCARGAR CSV</button></h2>
     <canvas id="grafico"></canvas>
   </div>
   <div class="tarjeta">
@@ -258,6 +263,24 @@ $("btn-entrenar").addEventListener("click", () => {
 });
 $("btn-valvula").addEventListener("click", () =>
   comando({accion: "probar_valvula"}, "Probando válvula…"));
+$("chip-sku").addEventListener("click", () => {
+  const sku = prompt("Nombre del producto/SKU a activar (se crea si no existe):",
+                     $("sku-nombre").textContent);
+  if (sku === null || !sku.trim()) return;
+  comando({accion: "cambiar_sku", sku: sku.trim()}, "Cambiando a SKU " + sku.trim());
+});
+$("btn-csv").addEventListener("click", async () => {
+  // Lista los días con registro y deja elegir cuál descargar.
+  try {
+    const dias = await (await fetch("/registros")).json();
+    if (!dias.length) { avisar("Todavía no hay registros guardados"); return; }
+    const eleccion = prompt(
+      "Días con registro:\\n" + dias.join("\\n") +
+      "\\n\\nEscribí la fecha a descargar (AAAA-MM-DD):", dias[dias.length - 1]);
+    if (eleccion === null || !eleccion.trim()) return;
+    window.location = "/registro.csv?fecha=" + encodeURIComponent(eleccion.trim());
+  } catch (e) { avisar("No se pudo listar los registros"); }
+});
 
 function pintarMarcha() {
   const b = $("btn-marcha");
@@ -278,6 +301,12 @@ async function actualizar() {
     $("texto-entrenar").textContent = entrenando ? "ENTRENANDO…" :
       (d.clasificador_activo ? "RE-ENTRENAR" : "ENTRENAR MODELO");
     $("total").textContent = d.total ?? 0;
+    $("sku-nombre").textContent = d.sku ?? "general";
+    const m = d.muestras || {};
+    const partes = Object.entries(m).map(([c, n]) => `${c}: <b>${n}</b>`);
+    $("muestras-linea").innerHTML = "Muestras del SKU <b>" + (d.sku ?? "general") +
+      "</b>: " + (partes.length ? partes.join(" · ") : "ninguna todavía") +
+      " &nbsp;<span style='color:var(--tenue)'>(mínimo 10 por clase para entrenar)</span>";
     $("bpm").innerHTML = (d.bpm ?? 0).toFixed(0) + ' <span class="unidad">bot/min</span>';
     $("defectos").textContent = d.defectos ?? 0;
     $("en-cuadro").textContent = d.en_cuadro ?? 0;
@@ -376,8 +405,10 @@ class _ManejadorTablero(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
             self.wfile.write(cuerpo)
-        elif self.path == "/registro.csv":
+        elif self.path.startswith("/registro.csv"):
             self._servir_registro()
+        elif self.path == "/registros":
+            self._listar_registros()
         elif self.path == "/video":
             self.send_response(200)
             self.send_header(
@@ -401,18 +432,44 @@ class _ManejadorTablero(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _listar_registros(self) -> None:
+        """Lista las fechas con registro de producción (endpoint /registros)."""
+        from pathlib import Path
+
+        fechas: list[str] = []
+        if self.carpeta_registro is not None and Path(self.carpeta_registro).exists():
+            fechas = sorted(
+                ruta.stem.removeprefix("produccion_")
+                for ruta in Path(self.carpeta_registro).glob("produccion_*.csv")
+            )
+        cuerpo = json.dumps(fechas).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
+
     def _servir_registro(self) -> None:
-        """Descarga el CSV de producción del día (endpoint /registro.csv)."""
+        """Descarga el CSV de producción de una fecha (/registro.csv?fecha=AAAA-MM-DD)."""
         from datetime import date
         from pathlib import Path
+        from urllib.parse import parse_qs, urlparse
 
         if self.carpeta_registro is None:
             self.send_error(404, "El registro esta desactivado (--sin-registro)")
             return
-        nombre = f"produccion_{date.today().isoformat()}.csv"
+        parametros = parse_qs(urlparse(self.path).query)
+        fecha = parametros.get("fecha", [date.today().isoformat()])[0]
+        # Solo se aceptan fechas AAAA-MM-DD: evita pedir rutas arbitrarias.
+        try:
+            fecha = date.fromisoformat(fecha).isoformat()
+        except ValueError:
+            self.send_error(400, "Fecha invalida: usar AAAA-MM-DD")
+            return
+        nombre = f"produccion_{fecha}.csv"
         ruta = Path(self.carpeta_registro) / nombre
         if not ruta.exists():
-            self.send_error(404, "Todavia no hay registro de hoy (pasa alguna botella)")
+            self.send_error(404, "No hay registro para esa fecha")
             return
         cuerpo = ruta.read_bytes()
         self.send_response(200)

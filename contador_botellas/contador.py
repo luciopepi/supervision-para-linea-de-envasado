@@ -72,8 +72,14 @@ class ContadorBotellas:
         carpeta_muestras: str = "dataset",
         carpeta_modelos: str = "modelos",
         clasificador: Clasificador | None = None,
+        sku: str = "general",
     ) -> None:
-        """Guarda los componentes del pipeline; el estado se crea en `procesar`."""
+        """Guarda los componentes del pipeline; el estado se crea en `procesar`.
+
+        `sku` es el producto activo: las muestras van a `dataset/<sku>/<clase>/`
+        y el modelo de defectos de ese producto a `modelos/<sku>/clasificador.pt`,
+        así cada producto de la línea tiene su propio entrenamiento.
+        """
         self.detector = detector
         self.linea = linea
         self.ventana_velocidad = ventana_velocidad
@@ -83,7 +89,42 @@ class ContadorBotellas:
         self.carpeta_muestras = Path(carpeta_muestras)
         self.carpeta_modelos = Path(carpeta_modelos)
         self.clasificador = clasificador
+        self.sku = self._nombre_clase_valido(sku)
         self._entrenando = False
+        self._muestras_cache: dict[str, int] = {}
+        self._muestras_cache_hora: float = 0.0
+
+    def _carpeta_sku(self) -> Path:
+        """Carpeta de muestras del producto activo: dataset/<sku>/."""
+        return self.carpeta_muestras / self.sku
+
+    def _modelos_sku(self) -> Path:
+        """Carpeta del modelo del producto activo: modelos/<sku>/."""
+        return self.carpeta_modelos / self.sku
+
+    def _cambiar_sku(self, nombre: str, estado: EstadoTablero) -> None:
+        """Activa otro producto: cambia carpeta de muestras y carga su modelo."""
+        self.sku = self._nombre_clase_valido(nombre)
+        self._muestras_cache_hora = 0.0
+        ruta_modelo = self._modelos_sku() / "clasificador.pt"
+        if ruta_modelo.exists():
+            self.clasificador = Clasificador(ruta_modelo)
+            estado.agregar_evento(
+                "estado", f"SKU activo: {self.sku} (modelo de defectos cargado)"
+            )
+        else:
+            self.clasificador = None
+            estado.agregar_evento(
+                "estado", f"SKU activo: {self.sku} (sin modelo entrenado todavía)"
+            )
+
+    def _muestras_sku(self) -> dict[str, int]:
+        """Conteo de recortes por clase del SKU activo, cacheado unos segundos."""
+        ahora = time.monotonic()
+        if ahora - self._muestras_cache_hora > 5.0:
+            self._muestras_cache = contar_muestras(self._carpeta_sku())
+            self._muestras_cache_hora = ahora
+        return self._muestras_cache
 
     def procesar(
         self,
@@ -299,21 +340,22 @@ class ContadorBotellas:
                 if detecciones is None or len(detecciones) == 0:
                     detecciones = self.detector.detectar(cuadro)
                 recortes = self._guardar_muestras(cuadro, detecciones, clase)
-                totales = ", ".join(
-                    f"{c}: {n}" for c, n in contar_muestras(self.carpeta_muestras).items()
-                )
+                self._muestras_cache_hora = 0.0
+                totales = ", ".join(f"{c}: {n}" for c, n in self._muestras_sku().items())
                 if recortes == 0:
                     estado.agregar_evento(
                         "muestra",
                         f"⚠ No se detectó ninguna botella en el cuadro: no se "
-                        f"guardaron recortes en dataset/{clase}/. Acercá la botella.",
+                        f"guardaron recortes. Acercá la botella.",
                     )
                 else:
                     estado.agregar_evento(
                         "muestra",
-                        f"{recortes} recorte(s) de botella en dataset/{clase}/ "
+                        f"{recortes} recorte(s) en dataset/{self.sku}/{clase}/ "
                         f"— total: {totales}",
                     )
+            elif accion == "cambiar_sku":
+                self._cambiar_sku(str(comando.get("sku", "general")), estado)
             elif accion == "probar_valvula":
                 if self.valvula is not None:
                     self.valvula.probar()
@@ -335,19 +377,21 @@ class ContadorBotellas:
             estado.agregar_evento("entrenamiento", "Ya hay un entrenamiento en curso")
             return detectando
         # Validación previa: si faltan muestras se avisa sin pausar nada.
-        conteo = contar_muestras(self.carpeta_muestras)
+        conteo = contar_muestras(self._carpeta_sku())
         validas = {c: n for c, n in conteo.items() if n >= MINIMO_MUESTRAS_POR_CLASE}
         if len(validas) < 2:
             estado.agregar_evento(
                 "entrenamiento",
-                f"Faltan muestras para entrenar: se necesitan 2 clases con "
-                f"{MINIMO_MUESTRAS_POR_CLASE}+ recortes. Hay: {conteo or 'ninguna'}. "
+                f"Faltan muestras para entrenar el SKU '{self.sku}': se necesitan "
+                f"2 clases con {MINIMO_MUESTRAS_POR_CLASE}+ recortes. "
+                f"Hay: {conteo or 'ninguna'}. "
                 f"Usá MUESTRA OK / MUESTRA DEFECTO con una botella a la vista.",
             )
             return detectando
         self._entrenando = True
         estado.agregar_evento(
-            "entrenamiento", "Entrenamiento iniciado (la detección queda en pausa)"
+            "entrenamiento",
+            f"Entrenamiento del SKU '{self.sku}' iniciado (la detección queda en pausa)",
         )
 
         def al_terminar(ruta) -> None:
@@ -364,8 +408,8 @@ class ContadorBotellas:
             self._entrenando = False
 
         entrenar_en_hilo(
-            self.carpeta_muestras,
-            self.carpeta_modelos,
+            self._carpeta_sku(),
+            self._modelos_sku(),
             informar=lambda mensaje: estado.agregar_evento("entrenamiento", mensaje),
             al_terminar=al_terminar,
         )
@@ -385,7 +429,7 @@ class ContadorBotellas:
         El entrenamiento usa solo los recortes (`*_bot*.jpg`); el cuadro
         completo queda como referencia. Devuelve cuántos recortes se guardaron.
         """
-        carpeta = self.carpeta_muestras / clase
+        carpeta = self._carpeta_sku() / clase
         carpeta.mkdir(parents=True, exist_ok=True)
         marca = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         cv2.imwrite(str(carpeta / f"{marca}_cuadro.jpg"), cuadro)
@@ -495,6 +539,8 @@ class ContadorBotellas:
                 "detectando": detectando,
                 "entrenando": self._entrenando,
                 "clasificador_activo": self.clasificador is not None,
+                "sku": self.sku,
+                "muestras": self._muestras_sku(),
                 "valvula": valvula_info,
                 "segundos_sin_cruce": round(sin_cruce, 1),
                 "hora": time.time(),

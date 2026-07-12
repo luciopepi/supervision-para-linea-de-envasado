@@ -114,8 +114,19 @@ def entrenar(
         verbose=False,
         plots=False,
     )
-    mejor = Path(carpeta_modelos) / "corridas" / "clasificador" / "weights" / "best.pt"
+    # La ruta del mejor modelo se le pregunta al entrenador (en Windows y
+    # según la versión de ultralytics puede no ser la carpeta pedida).
+    entrenador = modelo.trainer
+    mejor = Path(getattr(entrenador, "best", "") or "")
+    if not mejor.exists():
+        mejor = Path(getattr(entrenador, "last", "") or "")
+    if not mejor.exists():
+        raise FileNotFoundError(
+            f"El entrenamiento terminó pero no se encontró el modelo en "
+            f"{entrenador.save_dir}"
+        )
     salida = Path(carpeta_modelos) / "clasificador.pt"
+    salida.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(mejor, salida)
     informar(f"Modelo entrenado y guardado en {salida}")
     return salida

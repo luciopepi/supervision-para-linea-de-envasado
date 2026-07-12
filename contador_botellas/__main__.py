@@ -159,6 +159,12 @@ def crear_parser() -> argparse.ArgumentParser:
         help="Carpeta del clasificador de defectos entrenado en el equipo",
     )
     parser.add_argument(
+        "--sku",
+        default="general",
+        help="Producto activo al arrancar: sus muestras van a dataset/<sku>/ y "
+        "su modelo a modelos/<sku>/ (también se cambia desde la HMI)",
+    )
+    parser.add_argument(
         "--iniciar-detenido",
         action="store_true",
         help="Arrancar con la detección en pausa (se inicia desde la HMI)",
@@ -195,9 +201,9 @@ def main() -> None:
         duracion_ms=args.valvula_duracion,
         protocolo=args.valvula_protocolo,
     )
-    # Si ya hay un clasificador entrenado en el equipo, se carga solo.
+    # Si el SKU ya tiene un clasificador entrenado en el equipo, se carga solo.
     clasificador = None
-    ruta_clasificador = Path(args.modelos) / "clasificador.pt"
+    ruta_clasificador = Path(args.modelos) / args.sku / "clasificador.pt"
     if ruta_clasificador.exists():
         clasificador = Clasificador(ruta_clasificador)
         print(f"Clasificador de defectos cargado: {ruta_clasificador}")
@@ -212,6 +218,7 @@ def main() -> None:
         carpeta_muestras=args.dataset,
         carpeta_modelos=args.modelos,
         clasificador=clasificador,
+        sku=args.sku,
     )
 
     try:

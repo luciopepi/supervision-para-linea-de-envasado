@@ -180,6 +180,21 @@ Sin `--valvula-puerto`, la válvula queda en **modo simulado**: los descartes
 se registran como eventos (ideal para probar la lógica antes de armar el
 hardware).
 
+### Dónde queda todo guardado y cuánto ocupa
+
+Todo vive en la carpeta del programa (por ejemplo `C:\contador`):
+
+| Carpeta | Contenido | Tamaño aproximado |
+|---|---|---|
+| `registros/` | Un CSV por día, una fila por minuto | ~5 KB por día (nada) |
+| `dataset/<sku>/<clase>/` | Fotos JPG de las muestras | recorte ~30 KB, cuadro ~200 KB; 50 muestras ≈ 10 MB |
+| `modelos/<sku>/` | El modelo entrenado del SKU | ~3–10 MB por SKU |
+
+No se guardan videos (solo si pedís `--salida`). Los CSV se descargan desde
+la HMI con **⬇ DESCARGAR CSV**, que lista los días disponibles y baja el que
+elijas — también desde otra computadora de la red. Y siempre podés copiar las
+carpetas directamente con el explorador de Windows a un pendrive o disco.
+
 ### Si la cámara se ve entrecortada o en baja resolución
 
 - La resolución se pide con `--resolucion 1280x720` (por defecto). Si la
@@ -221,6 +236,14 @@ El sistema aprende a distinguir **tus** botellas directamente en el equipo,
 sin servicios externos. El detector encuentra cada botella; un clasificador
 entrenado con tus muestras decide si es `ok` o qué defecto tiene (falta de
 cápsula, sin etiqueta, botella distinta, nivel bajo...).
+
+**Un modelo por producto (SKU):** el chip **SKU** del encabezado muestra el
+producto activo; tocándolo se cambia o se crea otro (por ejemplo
+`vinotinto750`, `aceite1l`). Cada SKU tiene sus propias muestras en
+`dataset/<sku>/<clase>/` y su propio modelo en `modelos/<sku>/clasificador.pt`,
+que se carga automáticamente al cambiar de producto — el cambio de trabajo es
+tocar el chip y elegir el SKU. También se puede arrancar directo con
+`--sku nombre`.
 
 **Flujo completo desde la pantalla:**
 

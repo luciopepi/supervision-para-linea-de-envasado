@@ -25,9 +25,10 @@ de conteo).
 - Guarda un **registro de producción por minuto** en CSV diarios (`registros/`).
 - Genera un video anotado y un CSV con las estadísticas por cuadro.
 
-**Hoja de ruta:** detección de defectos (falta de cápsula, nivel de llenado
-bajo, botella vacía) entrenando un modelo propio con imágenes de la línea real
-(ver [Entrenar un modelo propio](#entrenar-un-modelo-propio)).
+- **Detecta defectos aprendiendo de tus propias botellas** (falta de cápsula,
+  sin etiqueta, botella distinta...): se capturan muestras y se entrena el
+  modelo desde la propia HMI, sin servicios externos (ver
+  [Detección de defectos](#detección-de-defectos-entrenar-desde-la-hmi)).
 
 ---
 
@@ -137,9 +138,11 @@ Con `--tablero`, la interfaz web tiene botones grandes pensados para tocar:
 - **▶ INICIAR / ⏹ DETENER DETECCIÓN**: arranca o pausa el conteo (el video
   sigue en vivo). Con `--iniciar-detenido` el sistema arranca en pausa.
 - **📷 MUESTRA OK / ⚠️ MUESTRA DEFECTO**: guarda el cuadro actual y el recorte
-  de cada botella en `dataset/ok/` o `dataset/defecto/`. Así se junta el
-  material para entrenar el modelo de defectos directamente desde la línea:
-  cuando pase una botella sin cápsula o mal llenada, tocá MUESTRA DEFECTO.
+  de cada botella en `dataset/<clase>/`. MUESTRA DEFECTO pregunta el nombre
+  del defecto (`sin_capsula`, `sin_etiqueta`, `botella_distinta`, ...).
+- **🧠 ENTRENAR MODELO**: entrena el clasificador de defectos con las muestras
+  capturadas, en el propio equipo (ver
+  [Detección de defectos](#detección-de-defectos-entrenar-desde-la-hmi)).
 - **💨 PROBAR VÁLVULA**: dispara un pulso de la válvula para verificar el
   conexionado.
 - **Eventos**: cada descarte, muestra o cambio de estado queda listado con su hora.

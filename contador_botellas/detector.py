@@ -3,6 +3,8 @@
 import numpy as np
 import supervision as sv
 
+from .partes import CLASE_BOTELLA
+
 # Índice de la clase "bottle" en el dataset COCO con el que vienen
 # preentrenados los modelos YOLO oficiales.
 CLASE_BOTELLA_COCO = 39
@@ -22,6 +24,14 @@ class DetectorBotellas:
     futuro se entrene un modelo propio (por ejemplo con clases `botella_ok`,
     `sin_capsula`, `nivel_bajo`), pasar la ruta del modelo y la lista de clases
     a considerar en `clases`.
+
+    Si no se pasa `clases` explícitamente y el modelo cargado tiene la clase
+    `botella` (nombre exacto del futuro modelo propio de partes, ver
+    `partes.py`), se usan TODAS las clases del modelo sin filtro: ese modelo
+    necesita ver también `tapa`, `etiqueta_frente`, `etiqueta_dorso`, `caja` y
+    `separador` para que `ContadorBotellas` arme sus auditores. Con el modelo
+    COCO de hoy (sin la clase `botella`) se sigue filtrando solo `bottle`,
+    exactamente como hasta ahora.
     """
 
     def __init__(
@@ -41,15 +51,27 @@ class DetectorBotellas:
         from ultralytics import YOLO  # import perezoso: tarda en cargar
 
         self.modelo = YOLO(ruta_modelo)
-        self.confianza = confianza
-        self.clases = clases if clases is not None else [CLASE_BOTELLA_COCO]
         self.dispositivo = dispositivo
         self.tamano_inferencia = tamano_inferencia
+        self.confianza = confianza
+        if clases is not None:
+            self.clases = clases
+        elif CLASE_BOTELLA in self.modelo.names.values():
+            # Modelo propio de partes: sin filtro, se necesitan todas sus
+            # clases (botella + tapa/etiqueta/caja/separador).
+            self.clases = None
+        else:
+            self.clases = [CLASE_BOTELLA_COCO]
 
     @property
     def nombres_clases(self) -> dict[int, str]:
         """Mapa id de clase → nombre según el modelo cargado."""
         return self.modelo.names
+
+    @property
+    def ids_por_nombre(self) -> dict[str, int]:
+        """Mapa inverso de `nombres_clases`: nombre de clase → id de clase."""
+        return {nombre: id_clase for id_clase, nombre in self.nombres_clases.items()}
 
     def detectar(self, cuadro: np.ndarray, umbral: float | None = None) -> sv.Detections:
         """Detecta botellas en un cuadro BGR y devuelve `sv.Detections` filtradas.

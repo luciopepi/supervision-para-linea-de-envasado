@@ -21,6 +21,14 @@ from .clasificador import (
 from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
+from .partes import (
+    CLASE_BOTELLA,
+    CLASE_CAJA,
+    CLASE_SEPARADOR,
+    PARTES_BOTELLA,
+    AuditorCajas,
+    AuditorPartes,
+)
 from .registro import RegistroProduccion
 from .salidas import ValvulaDescarte
 from .tablero import EstadoTablero
@@ -75,6 +83,8 @@ class ContadorBotellas:
         clasificador: Clasificador | None = None,
         sku: str = "general",
         registro_detecciones: RegistroDetecciones | None = None,
+        modo: str = "linea",
+        botellas_por_caja: int = 6,
     ) -> None:
         """Guarda los componentes del pipeline; el estado se crea en `procesar`.
 
@@ -83,7 +93,16 @@ class ContadorBotellas:
         así cada producto de la línea tiene su propio entrenamiento.
         `registro_detecciones`, si se pasa, guarda foto y CSV de auditoría de
         cada botella descartada (ver `detecciones.py`).
+
+        `modo` es "linea" (contar botellas cruzando la línea, con aviso de
+        `sin_tapa`/`sin_etiqueta` si el modelo detecta esas partes) o "caja"
+        (contar botellas dentro de cada caja vista desde arriba y verificar
+        el separador; requiere un modelo propio con la clase `caja`, ver
+        `partes.py`). `botellas_por_caja` es cuántas botellas debe traer cada
+        caja completa (solo se usa en modo "caja").
         """
+        if modo not in ("linea", "caja"):
+            raise ValueError(f"Modo inválido: '{modo}' (usar 'linea' o 'caja')")
         self.detector = detector
         self.linea = linea
         self.ventana_velocidad = ventana_velocidad
@@ -95,6 +114,8 @@ class ContadorBotellas:
         self.clasificador = clasificador
         self.sku = self._nombre_clase_valido(sku)
         self.registro_detecciones = registro_detecciones
+        self.modo = modo
+        self.botellas_por_caja = botellas_por_caja
         self._entrenando = False
         self._muestras_cache: dict[str, int] = {}
         self._muestras_cache_hora: float = 0.0
@@ -225,6 +246,33 @@ class ContadorBotellas:
         )
         velocidad = EstimadorVelocidad(ventana_segundos=self.ventana_velocidad)
 
+        # Con un modelo propio de partes, el detector entrega todas sus
+        # clases juntas: acá se decide cuál es la "clase principal" que va al
+        # rastreador y a la línea de conteo, y se preparan los auditores que
+        # acumulan las demás clases (partes de la botella o de la caja). Con
+        # el modelo COCO de hoy no hay clase `botella` de partes ni `caja`:
+        # id_principal queda en None y todo sigue exactamente como antes (ni
+        # se separan detecciones ni se instancia ningún auditor).
+        ids_por_nombre = self.detector.ids_por_nombre
+        nombres_clases = self.detector.nombres_clases
+        id_principal: int | None = None
+        auditor_partes: AuditorPartes | None = None
+        auditor_cajas: AuditorCajas | None = None
+        tiene_separador = CLASE_SEPARADOR in ids_por_nombre
+        if self.modo == "caja":
+            if CLASE_CAJA not in ids_por_nombre:
+                raise ValueError(
+                    "El modo caja necesita un modelo con la clase 'caja' "
+                    "(entrenar el detector de partes)."
+                )
+            id_principal = ids_por_nombre[CLASE_CAJA]
+            auditor_cajas = AuditorCajas()
+        else:
+            if CLASE_BOTELLA in ids_por_nombre:
+                id_principal = ids_por_nombre[CLASE_BOTELLA]
+            if any(parte in ids_por_nombre for parte in PARTES_BOTELLA):
+                auditor_partes = AuditorPartes()
+
         anotador_cajas = sv.BoxAnnotator(thickness=2)
         anotador_etiquetas = sv.LabelAnnotator(text_scale=0.4, text_padding=4)
         anotador_trazas = sv.TraceAnnotator(thickness=2, trace_length=int(fps))
@@ -249,6 +297,9 @@ class ContadorBotellas:
         detectando = not iniciar_detenido
         defectos_total = 0
         descartadas: set[int] = set()  # tracker_ids ya enviados a descarte
+        cajas_completas = 0
+        cajas_incompletas = 0
+        cajas_procesadas: set[int] = set()  # tracker_ids de caja ya evaluados al cruzar
         ultimas_detecciones: sv.Detections | None = None
         ultimo_cuadro_crudo: np.ndarray | None = None
         numero_cuadro = 0
@@ -277,6 +328,16 @@ class ContadorBotellas:
 
                 if detectando:
                     detecciones = self.detector.detectar_para_seguimiento(cuadro)
+                    # El detector entrega todas las clases juntas; se separa
+                    # la clase principal (botella en modo línea, caja en modo
+                    # caja) del resto de las partes antes de rastrear: solo
+                    # la principal va a ByteTrack y a la línea de conteo.
+                    if id_principal is not None:
+                        es_principal = detecciones.class_id == id_principal
+                        detecciones_partes = detecciones[~es_principal]
+                        detecciones = detecciones[es_principal]
+                    else:
+                        detecciones_partes = detecciones[np.zeros(len(detecciones), dtype=bool)]
                     detecciones = rastreador.update_with_detections(detecciones)
                     ultimas_detecciones = detecciones
                     entrantes, salientes = zona.trigger(detecciones)
@@ -289,7 +350,21 @@ class ContadorBotellas:
                             cruces, velocidad.total, velocidad.promedio_botellas_por_minuto()
                         )
 
-                    alertas = self._detectar_defectos(cuadro, detecciones)
+                    if auditor_partes is not None or auditor_cajas is not None:
+                        nombres_partes = [
+                            str(nombres_clases.get(int(id_clase), id_clase))
+                            for id_clase in detecciones_partes.class_id
+                        ]
+                        if auditor_partes is not None:
+                            auditor_partes.actualizar(
+                                detecciones, detecciones_partes.xyxy, nombres_partes
+                            )
+                        if auditor_cajas is not None:
+                            auditor_cajas.actualizar(
+                                detecciones, detecciones_partes.xyxy, nombres_partes
+                            )
+
+                    alertas = self._detectar_defectos(cuadro, detecciones, auditor_partes)
                     defectos_total += self._descartar_defectuosas(
                         detecciones,
                         entrantes | salientes,
@@ -299,6 +374,19 @@ class ContadorBotellas:
                         cuadro,
                         velocidad,
                     )
+                    if auditor_cajas is not None:
+                        nuevas_completas, nuevas_incompletas = self._procesar_cajas_cruzadas(
+                            detecciones,
+                            entrantes | salientes,
+                            auditor_cajas,
+                            tiene_separador,
+                            cajas_procesadas,
+                            estado_tablero,
+                            cuadro,
+                            velocidad,
+                        )
+                        cajas_completas += nuevas_completas
+                        cajas_incompletas += nuevas_incompletas
 
                     cuadro = self._anotar(
                         cuadro, detecciones, zona, velocidad, alertas,
@@ -328,6 +416,7 @@ class ContadorBotellas:
                     self._publicar(
                         estado_tablero, cuadro, velocidad, ultimas_detecciones,
                         detectando, defectos_total, instante, ultimo_cruce,
+                        cajas_completas, cajas_incompletas,
                     )
                 if mostrar:
                     cv2.imshow("Contador de botellas", cuadro)
@@ -520,10 +609,14 @@ class ContadorBotellas:
         return recortes
 
     def _detectar_defectos(
-        self, cuadro: np.ndarray, detecciones: sv.Detections
+        self,
+        cuadro: np.ndarray,
+        detecciones: sv.Detections,
+        auditor_partes: AuditorPartes | None = None,
     ) -> dict[int, str]:
         """Junta alertas de defecto por tracker_id: clasificador entrenado,
-        clases del modelo detector y heurística de inspección."""
+        clases del modelo detector, heurística de inspección y partes
+        faltantes (`sin_tapa`/`sin_etiqueta`) del auditor de partes."""
         alertas: dict[int, str] = {}
         if detecciones.tracker_id is None:
             return alertas
@@ -549,6 +642,12 @@ class ContadorBotellas:
             for resultado in self.inspector.inspeccionar(cuadro, detecciones):
                 if resultado.alerta:
                     alertas.setdefault(resultado.tracker_id, resultado.alerta)
+        if auditor_partes is not None:
+            for tracker_id in detecciones.tracker_id:
+                tid = int(tracker_id)
+                faltantes = auditor_partes.faltantes(tid)
+                if faltantes:
+                    alertas.setdefault(tid, ", ".join(faltantes))
         return alertas
 
     def _descartar_defectuosas(
@@ -597,6 +696,63 @@ class ContadorBotellas:
                     estado.agregar_evento("descarte", detalle)
         return nuevos
 
+    def _procesar_cajas_cruzadas(
+        self,
+        detecciones: sv.Detections,
+        cruzaron: np.ndarray,
+        auditor_cajas: AuditorCajas,
+        tiene_separador: bool,
+        procesadas: set[int],
+        estado: EstadoTablero | None,
+        cuadro: np.ndarray,
+        velocidad: EstimadorVelocidad,
+    ) -> tuple[int, int]:
+        """Evalúa cada caja que cruza la línea: cantidad de botellas y separador.
+
+        Cada tracker_id de caja se evalúa una sola vez, al cruzar. Siempre
+        agrega un evento con el resultado ("Caja #3: 6/6 botellas ✓" o
+        "...INCOMPLETA"); si está incompleta o (teniendo el modelo la clase
+        `separador`) no se vio el separador, además registra foto de
+        auditoría y activa la válvula de descarte (mismo flujo que una
+        botella defectuosa). Devuelve (cajas_completas_nuevas,
+        cajas_incompletas_nuevas) para acumular en el resumen.
+        """
+        completas = 0
+        incompletas = 0
+        if detecciones.tracker_id is None:
+            return completas, incompletas
+        for caja_xyxy, tracker_id, cruzo in zip(
+            detecciones.xyxy, detecciones.tracker_id, cruzaron
+        ):
+            tid = int(tracker_id)
+            if not cruzo or tid in procesadas:
+                continue
+            procesadas.add(tid)
+            resultado = auditor_cajas.resultado(tid, self.botellas_por_caja)
+            botellas, esperadas = resultado["botellas"], resultado["esperadas"]
+            completa = resultado["completa"]
+            falta_separador = tiene_separador and not resultado["separador"]
+            if completa:
+                completas += 1
+                texto = f"Caja #{tid}: {botellas}/{esperadas} botellas ✓"
+            else:
+                incompletas += 1
+                texto = f"Caja #{tid}: {botellas}/{esperadas} botellas — INCOMPLETA"
+            if falta_separador:
+                texto += ", sin separador"
+            if estado is not None:
+                estado.agregar_evento("caja", texto)
+            if not completa or falta_separador:
+                defecto = f"caja_{botellas}de{esperadas}" if not completa else "sin_separador"
+                if self.valvula is not None:
+                    self.valvula.descartar()
+                if self.registro_detecciones is not None:
+                    self.registro_detecciones.registrar(
+                        cuadro, caja_xyxy, self.sku, tid, defecto,
+                        velocidad.total, velocidad.botellas_por_minuto(),
+                    )
+        return completas, incompletas
+
     def _publicar(
         self,
         estado: EstadoTablero,
@@ -607,6 +763,8 @@ class ContadorBotellas:
         defectos_total: int,
         instante: float,
         ultimo_cruce: float | None,
+        cajas_completas: int = 0,
+        cajas_incompletas: int = 0,
     ) -> None:
         """Publica el cuadro anotado y las estadísticas para el tablero web."""
         ok_jpeg, jpeg = cv2.imencode(".jpg", cuadro, [cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -619,25 +777,27 @@ class ContadorBotellas:
                 "simulada": self.valvula.simulada,
                 "activaciones": self.valvula.activaciones,
             }
-        estado.publicar(
-            jpeg.tobytes(),
-            {
-                "total": velocidad.total,
-                "bpm": round(velocidad.botellas_por_minuto(), 1),
-                "bpm_promedio": round(velocidad.promedio_botellas_por_minuto(), 1),
-                "en_cuadro": len(detecciones) if detecciones is not None else 0,
-                "defectos": defectos_total,
-                "detectando": detectando,
-                "entrenando": self._entrenando,
-                "clasificador_activo": self.clasificador is not None,
-                "sku": self.sku,
-                "muestras": self._muestras_sku(),
-                "skus": self._listar_skus(),
-                "valvula": valvula_info,
-                "segundos_sin_cruce": round(sin_cruce, 1),
-                "hora": time.time(),
-            },
-        )
+        datos = {
+            "total": velocidad.total,
+            "bpm": round(velocidad.botellas_por_minuto(), 1),
+            "bpm_promedio": round(velocidad.promedio_botellas_por_minuto(), 1),
+            "en_cuadro": len(detecciones) if detecciones is not None else 0,
+            "defectos": defectos_total,
+            "detectando": detectando,
+            "entrenando": self._entrenando,
+            "clasificador_activo": self.clasificador is not None,
+            "sku": self.sku,
+            "muestras": self._muestras_sku(),
+            "skus": self._listar_skus(),
+            "valvula": valvula_info,
+            "segundos_sin_cruce": round(sin_cruce, 1),
+            "hora": time.time(),
+            "modo": self.modo,
+        }
+        if self.modo == "caja":
+            datos["cajas_completas"] = cajas_completas
+            datos["cajas_incompletas"] = cajas_incompletas
+        estado.publicar(jpeg.tobytes(), datos)
 
     @staticmethod
     def _anotar_pausa(cuadro: np.ndarray) -> np.ndarray:

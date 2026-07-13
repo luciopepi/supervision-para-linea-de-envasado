@@ -126,6 +126,8 @@ Duración procesada: 12.6 s
 | `--dataset` | `dataset` | Carpeta de las muestras capturadas desde la HMI |
 | `--detecciones` | `detecciones` | Carpeta de las fotos y el CSV de auditoría de cada defecto detectado |
 | `--sin-detecciones` | — | No guardar fotos de defectos para auditoría |
+| `--modo` | `linea` | `linea` (contar botellas cruzando la línea) o `caja` (contar botellas por caja; ver [Detección de partes y modo caja](#detección-de-partes-y-modo-caja-en-preparación)) |
+| `--botellas-por-caja` | `6` | Botellas que debe traer cada caja completa (solo `--modo caja`) |
 | `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
 | `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
 | `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
@@ -248,7 +250,9 @@ contador_botellas/
 ├── clasificador.py → entrenamiento y clasificación de defectos en el equipo
 ├── detecciones.py  → fotos y CSV de auditoría de cada defecto descartado
 ├── registro.py     → CSV diarios de producción por minuto
-└── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
+├── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
+├── partes.py       → clases de partes de botella/caja para el futuro detector propio
+└── fotogramas.py   → extrae fotogramas de videos/ para armar el dataset de detección
 videos/             → videos de prueba de líneas de envasado
 ```
 
@@ -300,6 +304,55 @@ cero (juntá más muestras en ese caso).
 llenado): son alcanzables con el mismo flujo pero exigen más muestras (100+
 por clase), cámara fija bien posicionada e iluminación constante — como en
 los equipos industriales, la luz estable es el 80% del éxito.
+
+## Detección de partes y modo caja (en preparación)
+
+El detector de hoy solo distingue "botella" (modelo COCO). Está preparada la
+lógica para un futuro **modelo propio de partes**, entrenado en el equipo con
+estas clases exactas: `botella`, `tapa`, `etiqueta_frente`, `etiqueta_dorso`,
+`caja`, `separador`. Todavía no existe ese modelo — esto documenta cómo se va
+a comportar el sistema en cuanto se cargue uno con `--modelo` (con el modelo
+COCO actual, nada de esto se activa y el sistema funciona exactamente igual
+que hoy).
+
+**Modo línea (por defecto) con el modelo de partes**: además de contar
+botellas, si el modelo detecta `tapa` y/o `etiqueta_frente`/`etiqueta_dorso`,
+cada botella que pasa se audita a lo largo de varios cuadros; si nunca se le
+vio una tapa se agrega la alerta `sin_tapa`, y si nunca se le vio ninguna de
+las dos etiquetas (frente o dorso — una botella normal solo muestra una,
+según cómo rota), `sin_etiqueta`. Estas alertas se integran al mismo flujo
+de descarte, foto de auditoría y evento que ya usan el clasificador de
+defectos y `--clases-defecto`.
+
+**Modo caja** (`--modo caja`): pensado para una segunda cámara cenital que
+mira las cajas ya armadas, antes de cerrarlas. Cuenta cuántas botellas trae
+cada caja (mediana de varias lecturas mientras pasa) y si tiene el separador
+de cartón; al cruzar la línea de conteo genera un evento
+`Caja #12: 6/6 botellas ✓` o `Caja #12: 5/6 botellas — INCOMPLETA`, y si está
+incompleta o le falta el separador, guarda foto de auditoría y descarta con
+la válvula, igual que una botella defectuosa. Requiere un modelo con la
+clase `caja`; sin ella el sistema avisa el error al arrancar en vez de
+intentar contar algo que no existe. La cantidad esperada de botellas por
+caja se configura con `--botellas-por-caja` (por defecto 6):
+
+```bash
+python -m contador_botellas --fuente 0 --modelo modelo_partes.pt \
+  --modo caja --botellas-por-caja 6 --tablero
+```
+
+**Herramienta de fotogramas**: primer paso para entrenar ese modelo propio es
+juntar imágenes etiquetadas. `contador_botellas/fotogramas.py` extrae cuadros
+de los videos de la línea, descartando los repetidos (útil porque la cinta
+parada genera cientos de cuadros casi idénticos):
+
+```bash
+python -m contador_botellas.fotogramas --videos videos --salida dataset_deteccion/imagenes --por-segundo 2
+```
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `--modo` | `linea` | `linea` o `caja` (ver arriba) |
+| `--botellas-por-caja` | `6` | Botellas esperadas por caja completa (solo `--modo caja`) |
 
 ## Notas
 

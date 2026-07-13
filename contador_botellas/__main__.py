@@ -181,6 +181,22 @@ def crear_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="No guardar fotos de defectos para auditoría",
     )
+    parser.add_argument(
+        "--modo",
+        choices=["linea", "caja"],
+        default="linea",
+        help="linea: contar botellas cruzando la línea (avisa sin_tapa/sin_etiqueta "
+        "con un modelo propio de partes). caja: contar botellas dentro de cajas "
+        "vistas desde arriba y verificar separador; requiere modelo propio con "
+        "la clase 'caja' (por defecto linea)",
+    )
+    parser.add_argument(
+        "--botellas-por-caja",
+        type=int,
+        default=6,
+        help="Cuántas botellas debe traer cada caja completa (solo --modo caja, "
+        "por defecto 6)",
+    )
     return parser
 
 
@@ -236,6 +252,8 @@ def main() -> None:
         clasificador=clasificador,
         sku=args.sku,
         registro_detecciones=registro_detecciones,
+        modo=args.modo,
+        botellas_por_caja=args.botellas_por_caja,
     )
 
     try:

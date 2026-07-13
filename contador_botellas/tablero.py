@@ -157,6 +157,7 @@ PAGINA_HTML = """<!doctype html>
   .ev-valvula  { background: #4a3a14; color: #ffd98a; }
   .ev-estado   { background: #2c2c2a; color: var(--tinta-2); }
   .ev-entrenamiento { background: #2a1a4a; color: #c8b3ff; }
+  .ev-caja     { background: #142a1a; color: #8adf9d; }
   .alterna { background: var(--superficie-2); border: 1px solid var(--borde);
              color: var(--tinta-2); border-radius: 8px; padding: 6px 14px; cursor: pointer;
              font-size: 13px; font-weight: 700; text-decoration: none; float: right; }
@@ -194,6 +195,7 @@ PAGINA_HTML = """<!doctype html>
   <span class="chip" id="chip-estado"><span class="punto" style="background:var(--tenue)"></span><span id="chip-texto">EN PAUSA</span></span>
   <span class="chip" id="chip-sku" style="cursor:pointer" title="Tocar para cambiar de producto">
     <span class="punto" style="background:var(--serie)"></span><span>SKU: <b id="sku-nombre">general</b> ✎</span></span>
+  <span class="chip" id="chip-modo" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>MODO: CAJAS</span></span>
   <span class="chip" id="chip-valvula" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>VÁLVULA SIMULADA</span></span>
   <span class="hora" id="hora">—</span>
 </header>
@@ -202,7 +204,7 @@ PAGINA_HTML = """<!doctype html>
   <div class="tarjeta video"><img src="/video" alt="Video en vivo de la línea con detecciones"></div>
   <div class="fichas">
     <div class="tarjeta ficha">
-      <div class="rotulo">Botellas</div>
+      <div class="rotulo" id="rotulo-total">Botellas</div>
       <div class="valor" id="total">0</div>
     </div>
     <div class="tarjeta ficha">
@@ -210,7 +212,7 @@ PAGINA_HTML = """<!doctype html>
       <div class="valor" id="bpm">0 <span class="unidad">bot/min</span></div>
     </div>
     <div class="tarjeta ficha defecto">
-      <div class="rotulo">Defectos descartados</div>
+      <div class="rotulo" id="rotulo-defectos">Defectos descartados</div>
       <div class="valor" id="defectos">0</div>
     </div>
     <div class="tarjeta ficha">
@@ -411,8 +413,15 @@ async function actualizar() {
     $("muestras-linea").innerHTML = "Muestras del SKU <b>" + (d.sku ?? "general") +
       "</b>: " + (partes.length ? partes.join(" · ") : "ninguna todavía") +
       " &nbsp;<span style='color:var(--tenue)'>(mínimo 10 por clase para entrenar)</span>";
-    $("bpm").innerHTML = (d.bpm ?? 0).toFixed(0) + ' <span class="unidad">bot/min</span>';
-    $("defectos").textContent = d.defectos ?? 0;
+    // Modo "caja": mismas fichas, otro significado (cajas en vez de botellas
+    // sueltas). Se cambia solo el texto de rótulos y unidades, no el HTML.
+    const modoCaja = d.modo === "caja";
+    $("chip-modo").style.display = modoCaja ? "" : "none";
+    $("rotulo-total").textContent = modoCaja ? "Cajas" : "Botellas";
+    $("rotulo-defectos").textContent = modoCaja ? "Cajas incompletas" : "Defectos descartados";
+    $("bpm").innerHTML = (d.bpm ?? 0).toFixed(0) +
+      ' <span class="unidad">' + (modoCaja ? "cajas/min" : "bot/min") + '</span>';
+    $("defectos").textContent = (modoCaja ? d.cajas_incompletas : d.defectos) ?? 0;
     $("en-cuadro").textContent = d.en_cuadro ?? 0;
     $("hora").textContent = formatoHora(d.hora ?? Date.now() / 1000);
     const punto = $("chip-estado").querySelector(".punto"), texto = $("chip-texto");

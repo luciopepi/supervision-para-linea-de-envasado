@@ -1,4 +1,6 @@
 ultralytics>=8.2
 supervision>=0.26,<0.30
 opencv-python>=4.9
-numpy>=1.26
+# <2.5: supervision 0.29 usa np.cross en 2D, eliminado en NumPy más nuevas
+numpy>=1.26,<2.5
+pyserial>=3.5

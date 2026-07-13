@@ -14,11 +14,21 @@ de conteo).
 - Le asigna un ID de seguimiento para no contarla dos veces.
 - Cuenta cada botella que cruza una línea configurable.
 - Calcula la velocidad: botellas/minuto instantánea (ventana deslizante) y promedio.
+- Sirve una **HMI táctil web** (`--tablero`): video en vivo con las
+  detecciones, contadores grandes, botones INICIAR/DETENER, captura de
+  muestras para entrenamiento, prueba de válvula, eventos y gráfico de
+  velocidad — pensada para una pantalla táctil junto a la línea, visible
+  desde cualquier dispositivo de la red local.
+- Comanda una **electroválvula de descarte** por relé USB (`--valvula-puerto`),
+  con retardo y duración de soplido configurables; sin hardware funciona en
+  modo simulado.
+- Guarda un **registro de producción por minuto** en CSV diarios (`registros/`).
 - Genera un video anotado y un CSV con las estadísticas por cuadro.
 
-**Hoja de ruta:** detección de defectos (falta de cápsula, nivel de llenado
-bajo, botella vacía) entrenando un modelo propio con imágenes de la línea real
-(ver [Entrenar un modelo propio](#entrenar-un-modelo-propio)).
+- **Detecta defectos aprendiendo de tus propias botellas** (falta de cápsula,
+  sin etiqueta, botella distinta...): se capturan muestras y se entrena el
+  modelo desde la propia HMI, sin servicios externos (ver
+  [Detección de defectos](#detección-de-defectos-entrenar-desde-la-hmi)).
 
 ---
 
@@ -53,6 +63,30 @@ python -m contador_botellas \
 python -m contador_botellas --fuente 0 --mostrar
 ```
 
+**Con tablero de control web** (recomendado para producción):
+
+```bash
+python -m contador_botellas --fuente 0 --tablero
+```
+
+Al arrancar imprime las direcciones del tablero, por ejemplo:
+
+```
+Tablero de control disponible en:
+  → http://localhost:8000   (en esta computadora)
+  → http://192.168.1.34:8000   (desde otra compu o celular en la misma red)
+```
+
+El tablero muestra el video en vivo con las detecciones, botellas contadas,
+velocidad actual y promedio, el estado de la línea (PRODUCIENDO / SIN
+PRODUCCIÓN) y un gráfico de la velocidad de los últimos 15 minutos, con vista
+de tabla. Además, salvo que se pase `--sin-registro`, se guarda un CSV por día
+en `registros/` con la producción minuto a minuto — sirve como histórico de
+turnos.
+
+Para salir: tecla `q` (o `Esc`) sobre la ventana de video, o `Ctrl+C` en la
+consola.
+
 **Con una cámara IP:**
 
 ```bash
@@ -81,8 +115,96 @@ Duración procesada: 12.6 s
 | `--salida` | — | Video anotado de salida |
 | `--csv` | — | CSV con estadísticas por cuadro |
 | `--mostrar` | — | Ventana en vivo (tecla `q` para salir) |
+| `--tablero` | — | HMI táctil web en la red local |
+| `--puerto` | `8000` | Puerto del tablero web |
+| `--registro` | `registros` | Carpeta de los CSV diarios por minuto |
+| `--sin-registro` | — | No guardar el registro por minuto |
+| `--resolucion` | `1280x720` | Resolución pedida a la cámara web |
+| `--tamano-inferencia` | `640` | Tamaño de imagen para la red (480/416 = más fluido en CPU) |
+| `--iniciar-detenido` | — | Arrancar en pausa; se inicia desde la HMI |
+| `--dataset` | `dataset` | Carpeta de las muestras capturadas desde la HMI |
+| `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
+| `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
+| `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
+| `--valvula-duracion` | `300` | ms que dura el soplido |
+| `--valvula-protocolo` | `arduino` | `arduino` (bytes '1'/'0') o `lcus` (relé LCUS-1/2) |
 | `--inspeccion` | — | Heurística experimental de nivel de llenado |
 | `--dispositivo` | auto | `cpu`, `0` (GPU CUDA), `mps` (Mac) |
+
+### La HMI (pantalla táctil)
+
+Con `--tablero`, la interfaz web tiene botones grandes pensados para tocar:
+
+- **▶ INICIAR / ⏹ DETENER DETECCIÓN**: arranca o pausa el conteo (el video
+  sigue en vivo). Con `--iniciar-detenido` el sistema arranca en pausa.
+- **📷 MUESTRA OK / ⚠️ MUESTRA DEFECTO**: guarda el cuadro actual y el recorte
+  de cada botella en `dataset/<clase>/`. MUESTRA DEFECTO pregunta el nombre
+  del defecto (`sin_capsula`, `sin_etiqueta`, `botella_distinta`, ...).
+- **🧠 ENTRENAR MODELO**: entrena el clasificador de defectos con las muestras
+  capturadas, en el propio equipo (ver
+  [Detección de defectos](#detección-de-defectos-entrenar-desde-la-hmi)).
+- **💨 PROBAR VÁLVULA**: dispara un pulso de la válvula para verificar el
+  conexionado.
+- **Eventos**: cada descarte, muestra o cambio de estado queda listado con su hora.
+
+Para pantalla completa en la PC táctil: abrir el navegador con `F11`, o crear
+un acceso directo de Chrome/Edge con `--kiosk http://localhost:8000`.
+
+### La válvula de descarte
+
+La forma más simple de comandar la electroválvula desde Windows es un **relé
+USB**: un Arduino (u otro micro) con módulo relé, o un relé USB tipo LCUS-1.
+Se configura con `--valvula-puerto COM3` (ver el número de puerto en el
+Administrador de dispositivos de Windows). El flujo es:
+
+1. El modelo detecta una botella con clase de defecto (`--clases-defecto`) o
+   la heurística de inspección la marca.
+2. Cuando esa botella **cruza la línea de conteo**, se programa el soplido:
+   espera `--valvula-retardo` ms (el tiempo de viaje hasta la válvula, a
+   calibrar en la línea) y activa la salida `--valvula-duracion` ms.
+3. Cada descarte queda registrado como evento en la HMI.
+
+Sketch de Arduino de ejemplo (protocolo `arduino`, relé en el pin 7):
+
+```cpp
+void setup() { Serial.begin(9600); pinMode(7, OUTPUT); }
+void loop() {
+  if (Serial.available()) {
+    char c = Serial.read();
+    digitalWrite(7, c == '1' ? HIGH : LOW);
+  }
+}
+```
+
+Sin `--valvula-puerto`, la válvula queda en **modo simulado**: los descartes
+se registran como eventos (ideal para probar la lógica antes de armar el
+hardware).
+
+### Dónde queda todo guardado y cuánto ocupa
+
+Todo vive en la carpeta del programa (por ejemplo `C:\contador`):
+
+| Carpeta | Contenido | Tamaño aproximado |
+|---|---|---|
+| `registros/` | Un CSV por día, una fila por minuto | ~5 KB por día (nada) |
+| `dataset/<sku>/<clase>/` | Fotos JPG de las muestras | recorte ~30 KB, cuadro ~200 KB; 50 muestras ≈ 10 MB |
+| `modelos/<sku>/` | El modelo entrenado del SKU | ~3–10 MB por SKU |
+
+No se guardan videos (solo si pedís `--salida`). Los CSV se descargan desde
+la HMI con **⬇ DESCARGAR CSV**, que lista los días disponibles y baja el que
+elijas — también desde otra computadora de la red. Y siempre podés copiar las
+carpetas directamente con el explorador de Windows a un pendrive o disco.
+
+### Si la cámara se ve entrecortada o en baja resolución
+
+- La resolución se pide con `--resolucion 1280x720` (por defecto). Si la
+  cámara no la soporta, queda en el modo más cercano.
+- La fluidez depende de la velocidad de detección: en una PC sin GPU, probá
+  `--tamano-inferencia 480` (o `416`) — acelera mucho con muy poca pérdida de
+  precisión cuando las botellas se ven grandes.
+- La lectura de la cámara corre en un hilo propio: la imagen nunca queda
+  atrasada; si la PC no llega a procesar todos los cuadros, descarta los
+  viejos y muestra siempre el actual.
 
 ### Consejo: dónde poner la línea de conteo
 
@@ -99,32 +221,61 @@ contador_botellas/
 ├── contador.py     → pipeline: tracking + línea de conteo + anotación
 ├── detector.py     → detección YOLO → sv.Detections
 ├── velocidad.py    → botellas/min (ventana deslizante y promedio)
+├── tablero.py      → HMI táctil web (video en vivo, botones, eventos, gráfico)
+├── captura.py      → hilo de captura de cámara (resolución, sin retraso)
+├── salidas.py      → válvula de descarte por relé USB (o modo simulado)
+├── clasificador.py → entrenamiento y clasificación de defectos en el equipo
+├── registro.py     → CSV diarios de producción por minuto
 └── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 videos/             → videos de prueba de líneas de envasado
 ```
 
-## Entrenar un modelo propio
+## Detección de defectos: entrenar desde la HMI
 
-El modelo preentrenado (COCO) detecta botellas genéricas y funciona muy bien
-para contar. Para detectar **defectos** (falta de cápsula, nivel bajo, botella
-vacía) hace falta un modelo entrenado con imágenes de **tu línea real**:
+El sistema aprende a distinguir **tus** botellas directamente en el equipo,
+sin servicios externos. El detector encuentra cada botella; un clasificador
+entrenado con tus muestras decide si es `ok` o qué defecto tiene (falta de
+cápsula, sin etiqueta, botella distinta, nivel bajo...).
 
-1. **Capturar imágenes** de la línea con la cámara definitiva, en las
-   condiciones reales de luz. Incluir ejemplos de cada defecto (aunque haya
-   que provocarlos a propósito). Unas 200–500 imágenes es un buen comienzo.
-2. **Etiquetar** con [Roboflow](https://roboflow.com) (gratis para proyectos
-   chicos) con clases como: `botella_ok`, `sin_capsula`, `nivel_bajo`, `vacia`.
-3. **Entrenar** un YOLO con esas etiquetas (en Roboflow, Google Colab o local):
-   ```bash
-   yolo train model=yolov8n.pt data=dataset/data.yaml epochs=100 imgsz=640
-   ```
-4. **Usar el modelo propio** en este sistema:
-   ```bash
-   python -m contador_botellas --fuente 0 --modelo runs/detect/train/weights/best.pt --clases 0 1 2 3
-   ```
+**Un modelo por producto (SKU):** el chip **SKU** del encabezado muestra el
+producto activo; tocándolo se cambia o se crea otro (por ejemplo
+`vinotinto750`, `aceite1l`). Cada SKU tiene sus propias muestras en
+`dataset/<sku>/<clase>/` y su propio modelo en `modelos/<sku>/clasificador.pt`,
+que se carga automáticamente al cambiar de producto — el cambio de trabajo es
+tocar el chip y elegir el SKU. También se puede arrancar directo con
+`--sku nombre`.
 
-Con eso, cada botella detectada trae su clase (`sin_capsula`, etc.) y el
-módulo `inspeccion.py` puede convertirlas en alertas de producción.
+**Flujo completo desde la pantalla:**
+
+1. **Capturar muestras**: con una botella buena pasando frente a la cámara,
+   tocá **MUESTRA OK** varias veces (guarda el recorte de cada botella en
+   `dataset/ok/`). Después pasá la botella con el defecto y tocá
+   **MUESTRA DEFECTO** — te pregunta el nombre (`sin_capsula`, `sin_etiqueta`,
+   `botella_distinta`, o el que quieras) y guarda en esa carpeta. Podés crear
+   tantos tipos de defecto como necesites.
+   - ⚠ El botón guarda el recorte de **todas** las botellas visibles en ese
+     momento: capturá con un solo tipo de botella frente a la cámara.
+   - Mínimo **10 recortes por clase** (el sistema lo exige); con 30–50 por
+     clase funciona mucho mejor. Variá posición, ángulo y luz.
+2. **Entrenar**: tocá **🧠 ENTRENAR MODELO**. La detección se pausa, el
+   entrenamiento corre en el equipo (unos minutos en CPU) y el avance se ve
+   en Eventos. Al terminar, el modelo queda guardado en
+   `modelos/clasificador.pt` y **se activa solo**.
+3. **Inspeccionar**: tocá INICIAR DETECCIÓN. Cada botella que pasa se
+   clasifica; toda clase distinta de `ok` se marca en la imagen, suma al
+   contador de **defectos descartados** y dispara la válvula al cruzar la
+   línea.
+
+El modelo queda en `modelos/` y se carga automáticamente en los próximos
+arranques. Para re-entrenar con más muestras, tocá el botón de nuevo (dice
+RE-ENTRENAR). Si el equipo tiene internet, el entrenamiento parte de un
+modelo preentrenado (mejor con pocas muestras); sin internet entrena desde
+cero (juntá más muestras en ese caso).
+
+**Defectos muy finos** (etiqueta apenas torcida, milímetros de nivel de
+llenado): son alcanzables con el mismo flujo pero exigen más muestras (100+
+por clase), cámara fija bien posicionada e iluminación constante — como en
+los equipos industriales, la luz estable es el 80% del éxito.
 
 ## Notas
 

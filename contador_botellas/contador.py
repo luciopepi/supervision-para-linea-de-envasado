@@ -1,15 +1,28 @@
-"""Pipeline principal: detección + seguimiento + conteo + velocidad."""
+"""Pipeline principal: detección + seguimiento + conteo + velocidad + descarte."""
 
 import csv
+import sys
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 import supervision as sv
 
+from .captura import CapturaEnVivo, configurar_camara
+from .clasificador import (
+    MINIMO_MUESTRAS_POR_CLASE,
+    Clasificador,
+    contar_muestras,
+    entrenar_en_hilo,
+)
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
+from .registro import RegistroProduccion
+from .salidas import ValvulaDescarte
+from .tablero import EstadoTablero
 from .velocidad import EstimadorVelocidad
 
 
@@ -45,7 +58,7 @@ class ContadorBotellas:
 
     Fuentes soportadas: índice de cámara web ("0", "1"...), ruta a un archivo
     de video o URL de stream (RTSP/HTTP). Produce un video anotado opcional,
-    estadísticas en CSV y un resumen final.
+    estadísticas en CSV, tablero web, registro por minuto y señal de descarte.
     """
 
     def __init__(
@@ -54,12 +67,64 @@ class ContadorBotellas:
         linea: ConfiguracionLinea,
         ventana_velocidad: float = 30.0,
         inspector: InspectorBotellas | None = None,
+        valvula: ValvulaDescarte | None = None,
+        clases_defecto: set[int] | None = None,
+        carpeta_muestras: str = "dataset",
+        carpeta_modelos: str = "modelos",
+        clasificador: Clasificador | None = None,
+        sku: str = "general",
     ) -> None:
-        """Guarda los componentes del pipeline; el estado se crea en `procesar`."""
+        """Guarda los componentes del pipeline; el estado se crea en `procesar`.
+
+        `sku` es el producto activo: las muestras van a `dataset/<sku>/<clase>/`
+        y el modelo de defectos de ese producto a `modelos/<sku>/clasificador.pt`,
+        así cada producto de la línea tiene su propio entrenamiento.
+        """
         self.detector = detector
         self.linea = linea
         self.ventana_velocidad = ventana_velocidad
         self.inspector = inspector
+        self.valvula = valvula
+        self.clases_defecto = clases_defecto or set()
+        self.carpeta_muestras = Path(carpeta_muestras)
+        self.carpeta_modelos = Path(carpeta_modelos)
+        self.clasificador = clasificador
+        self.sku = self._nombre_clase_valido(sku)
+        self._entrenando = False
+        self._muestras_cache: dict[str, int] = {}
+        self._muestras_cache_hora: float = 0.0
+
+    def _carpeta_sku(self) -> Path:
+        """Carpeta de muestras del producto activo: dataset/<sku>/."""
+        return self.carpeta_muestras / self.sku
+
+    def _modelos_sku(self) -> Path:
+        """Carpeta del modelo del producto activo: modelos/<sku>/."""
+        return self.carpeta_modelos / self.sku
+
+    def _cambiar_sku(self, nombre: str, estado: EstadoTablero) -> None:
+        """Activa otro producto: cambia carpeta de muestras y carga su modelo."""
+        self.sku = self._nombre_clase_valido(nombre)
+        self._muestras_cache_hora = 0.0
+        ruta_modelo = self._modelos_sku() / "clasificador.pt"
+        if ruta_modelo.exists():
+            self.clasificador = Clasificador(ruta_modelo)
+            estado.agregar_evento(
+                "estado", f"SKU activo: {self.sku} (modelo de defectos cargado)"
+            )
+        else:
+            self.clasificador = None
+            estado.agregar_evento(
+                "estado", f"SKU activo: {self.sku} (sin modelo entrenado todavía)"
+            )
+
+    def _muestras_sku(self) -> dict[str, int]:
+        """Conteo de recortes por clase del SKU activo, cacheado unos segundos."""
+        ahora = time.monotonic()
+        if ahora - self._muestras_cache_hora > 5.0:
+            self._muestras_cache = contar_muestras(self._carpeta_sku())
+            self._muestras_cache_hora = ahora
+        return self._muestras_cache
 
     def procesar(
         self,
@@ -68,15 +133,31 @@ class ContadorBotellas:
         ruta_csv: str | None = None,
         mostrar: bool = False,
         max_cuadros: int | None = None,
+        estado_tablero: EstadoTablero | None = None,
+        registro: RegistroProduccion | None = None,
+        resolucion: tuple[int, int] | None = None,
+        iniciar_detenido: bool = False,
     ) -> dict[str, float]:
         """Procesa la fuente cuadro a cuadro y devuelve el resumen final.
 
-        El resumen contiene `total`, `bpm_promedio` y `duracion_s`.
+        El resumen contiene `total`, `bpm_promedio` y `duracion_s`. Si se pasa
+        `estado_tablero`, publica cada cuadro anotado, las estadísticas y
+        atiende los comandos de la HMI (iniciar/detener, muestras, válvula).
         """
-        captura = self._abrir_fuente(fuente)
-        fps = captura.get(cv2.CAP_PROP_FPS) or 30.0
-        ancho = int(captura.get(cv2.CAP_PROP_FRAME_WIDTH))
-        alto = int(captura.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        captura_cruda = self._abrir_fuente(fuente, resolucion)
+        # Con cámara o stream el reloj de pared es la referencia de tiempo;
+        # con un archivo se usa el tiempo del video para que la velocidad no
+        # dependa de lo rápido que procese la computadora.
+        en_vivo = fuente.isdigit() or fuente.startswith(("rtsp://", "http://", "https://"))
+        fps = captura_cruda.get(cv2.CAP_PROP_FPS) or 30.0
+        ancho = int(captura_cruda.get(cv2.CAP_PROP_FRAME_WIDTH))
+        alto = int(captura_cruda.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if en_vivo:
+            print(f"Cámara abierta a {ancho}x{alto}.")
+        # En vivo, un hilo dedicado lee la cámara para que la imagen nunca
+        # quede atrasada aunque la detección procese más lento.
+        captura = CapturaEnVivo(captura_cruda) if en_vivo else captura_cruda
+        inicio = time.monotonic()
 
         zona = self.linea.crear_zona(ancho, alto)
         rastreador = sv.ByteTrack(frame_rate=int(fps))
@@ -103,63 +184,103 @@ class ContadorBotellas:
                 ["tiempo_s", "total", "botellas_en_cuadro", "bpm_instantaneo", "bpm_promedio"]
             )
 
+        detectando = not iniciar_detenido
+        defectos_total = 0
+        descartadas: set[int] = set()  # tracker_ids ya enviados a descarte
+        ultimas_detecciones: sv.Detections | None = None
+        ultimo_cuadro_crudo: np.ndarray | None = None
         numero_cuadro = 0
+        ultimo_cruce: float | None = None
         try:
             while True:
-                ok, cuadro = captura.read()
+                ok, cuadro = captura.leer() if en_vivo else captura.read()
                 if not ok:
                     break
+                if cuadro is None:  # la cámara todavía no entregó el primer cuadro
+                    time.sleep(0.01)
+                    continue
                 numero_cuadro += 1
                 if max_cuadros and numero_cuadro > max_cuadros:
                     break
-                instante = numero_cuadro / fps
+                instante = time.monotonic() - inicio if en_vivo else numero_cuadro / fps
+                ultimo_cuadro_crudo = cuadro
 
-                detecciones = self.detector.detectar(cuadro)
-                detecciones = rastreador.update_with_detections(detecciones)
-                entrantes, salientes = zona.trigger(detecciones)
-                cruces = int(np.sum(entrantes)) + int(np.sum(salientes))
-                velocidad.registrar_cruces(cruces, instante)
+                if estado_tablero is not None:
+                    detectando = self._atender_comandos(
+                        estado_tablero,
+                        detectando,
+                        ultimo_cuadro_crudo,
+                        ultimas_detecciones,
+                    )
 
-                alertas: dict[int, str] = {}
-                if self.inspector is not None:
-                    for resultado in self.inspector.inspeccionar(cuadro, detecciones):
-                        if resultado.alerta:
-                            alertas[resultado.tracker_id] = resultado.alerta
+                if detectando:
+                    detecciones = self.detector.detectar(cuadro)
+                    detecciones = rastreador.update_with_detections(detecciones)
+                    ultimas_detecciones = detecciones
+                    entrantes, salientes = zona.trigger(detecciones)
+                    cruces = int(np.sum(entrantes)) + int(np.sum(salientes))
+                    velocidad.registrar_cruces(cruces, instante)
+                    if cruces:
+                        ultimo_cruce = instante
+                    if registro is not None:
+                        registro.registrar(
+                            cruces, velocidad.total, velocidad.promedio_botellas_por_minuto()
+                        )
 
-                cuadro = self._anotar(
-                    cuadro,
-                    detecciones,
-                    zona,
-                    velocidad,
-                    alertas,
-                    anotador_cajas,
-                    anotador_etiquetas,
-                    anotador_trazas,
-                    anotador_linea,
-                )
+                    alertas = self._detectar_defectos(cuadro, detecciones)
+                    defectos_total += self._descartar_defectuosas(
+                        detecciones, entrantes | salientes, alertas, descartadas, estado_tablero
+                    )
+
+                    cuadro = self._anotar(
+                        cuadro, detecciones, zona, velocidad, alertas,
+                        anotador_cajas, anotador_etiquetas, anotador_trazas, anotador_linea,
+                    )
+                else:
+                    ultimas_detecciones = None
+                    cuadro = self._anotar_pausa(cuadro)
+                    if not en_vivo:
+                        # Sin este freno, un archivo en pausa se consumiría a
+                        # máxima velocidad y el video se "adelantaría" solo.
+                        time.sleep(1.0 / fps)
 
                 if escritor is not None:
                     escritor.write(cuadro)
-                if escritor_csv is not None:
+                if escritor_csv is not None and detectando:
                     escritor_csv.writerow(
                         [
                             f"{instante:.2f}",
                             velocidad.total,
-                            len(detecciones),
+                            len(ultimas_detecciones) if ultimas_detecciones is not None else 0,
                             f"{velocidad.botellas_por_minuto():.1f}",
                             f"{velocidad.promedio_botellas_por_minuto():.1f}",
                         ]
                     )
+                if estado_tablero is not None:
+                    self._publicar(
+                        estado_tablero, cuadro, velocidad, ultimas_detecciones,
+                        detectando, defectos_total, instante, ultimo_cruce,
+                    )
                 if mostrar:
                     cv2.imshow("Contador de botellas", cuadro)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                    tecla = cv2.waitKey(1) & 0xFF
+                    if tecla in (ord("q"), ord("Q"), 27):  # q o Esc
                         break
+        except KeyboardInterrupt:
+            print("\nDetenido con Ctrl+C.")
         finally:
-            captura.release()
+            if en_vivo:
+                captura.liberar()
+            else:
+                captura.release()
             if escritor is not None:
                 escritor.release()
             if archivo_csv is not None:
                 archivo_csv.close()
+            if registro is not None:
+                registro.cerrar(velocidad.total, velocidad.promedio_botellas_por_minuto())
+            if self.valvula is not None:
+                self.valvula.cerrar()
             if mostrar:
                 cv2.destroyAllWindows()
 
@@ -167,13 +288,26 @@ class ContadorBotellas:
             "total": float(velocidad.total),
             "bpm_promedio": velocidad.promedio_botellas_por_minuto(),
             "duracion_s": numero_cuadro / fps,
+            "defectos": float(defectos_total),
         }
 
     @staticmethod
-    def _abrir_fuente(fuente: str) -> cv2.VideoCapture:
+    def _abrir_fuente(
+        fuente: str, resolucion: tuple[int, int] | None = None
+    ) -> cv2.VideoCapture:
         """Abre cámara web (índice numérico), archivo de video o URL de stream."""
         if fuente.isdigit():
-            captura = cv2.VideoCapture(int(fuente))
+            print(f"Abriendo cámara {fuente}...")
+            # En Windows el backend por defecto (Media Foundation) puede
+            # colgarse minutos al abrir la webcam; DirectShow abre al instante.
+            if sys.platform == "win32":
+                captura = cv2.VideoCapture(int(fuente), cv2.CAP_DSHOW)
+                if not captura.isOpened():
+                    captura = cv2.VideoCapture(int(fuente))
+            else:
+                captura = cv2.VideoCapture(int(fuente))
+            if captura.isOpened() and resolucion is not None:
+                configurar_camara(captura, *resolucion)
         else:
             if not fuente.startswith(("rtsp://", "http://", "https://")):
                 if not Path(fuente).exists():
@@ -182,6 +316,248 @@ class ContadorBotellas:
         if not captura.isOpened():
             raise RuntimeError(f"No se pudo abrir la fuente de video: {fuente}")
         return captura
+
+    def _atender_comandos(
+        self,
+        estado: EstadoTablero,
+        detectando: bool,
+        cuadro: np.ndarray | None,
+        detecciones: sv.Detections | None,
+    ) -> bool:
+        """Ejecuta los comandos pendientes de la HMI y devuelve el nuevo estado."""
+        for comando in estado.obtener_comandos():
+            accion = comando.get("accion")
+            if accion == "iniciar":
+                detectando = True
+                estado.agregar_evento("estado", "Detección iniciada")
+            elif accion == "detener":
+                detectando = False
+                estado.agregar_evento("estado", "Detección detenida")
+            elif accion == "capturar" and cuadro is not None:
+                clase = self._nombre_clase_valido(str(comando.get("clase", "ok")))
+                # Con la detección en pausa no hay detecciones del pipeline:
+                # se corre una detección puntual para poder recortar botellas.
+                if detecciones is None or len(detecciones) == 0:
+                    detecciones = self.detector.detectar(cuadro)
+                recortes = self._guardar_muestras(cuadro, detecciones, clase)
+                self._muestras_cache_hora = 0.0
+                totales = ", ".join(f"{c}: {n}" for c, n in self._muestras_sku().items())
+                if recortes == 0:
+                    estado.agregar_evento(
+                        "muestra",
+                        f"⚠ No se detectó ninguna botella en el cuadro: no se "
+                        f"guardaron recortes. Acercá la botella.",
+                    )
+                else:
+                    estado.agregar_evento(
+                        "muestra",
+                        f"{recortes} recorte(s) en dataset/{self.sku}/{clase}/ "
+                        f"— total: {totales}",
+                    )
+            elif accion == "cambiar_sku":
+                self._cambiar_sku(str(comando.get("sku", "general")), estado)
+            elif accion == "probar_valvula":
+                if self.valvula is not None:
+                    self.valvula.probar()
+                    modo = "SIMULADA" if self.valvula.simulada else "real"
+                    estado.agregar_evento("valvula", f"Prueba de válvula ({modo})")
+                else:
+                    estado.agregar_evento("valvula", "Válvula no configurada (--valvula-puerto)")
+            elif accion == "entrenar":
+                detectando = self._iniciar_entrenamiento(estado, detectando)
+        return detectando
+
+    def _iniciar_entrenamiento(self, estado: EstadoTablero, detectando: bool) -> bool:
+        """Lanza el entrenamiento del clasificador en segundo plano.
+
+        Pausa la detección mientras entrena para dejarle la CPU al
+        entrenamiento; al terminar carga el modelo nuevo en caliente.
+        """
+        if self._entrenando:
+            estado.agregar_evento("entrenamiento", "Ya hay un entrenamiento en curso")
+            return detectando
+        # Validación previa: si faltan muestras se avisa sin pausar nada.
+        conteo = contar_muestras(self._carpeta_sku())
+        validas = {c: n for c, n in conteo.items() if n >= MINIMO_MUESTRAS_POR_CLASE}
+        if len(validas) < 2:
+            estado.agregar_evento(
+                "entrenamiento",
+                f"Faltan muestras para entrenar el SKU '{self.sku}': se necesitan "
+                f"2 clases con {MINIMO_MUESTRAS_POR_CLASE}+ recortes. "
+                f"Hay: {conteo or 'ninguna'}. "
+                f"Usá MUESTRA OK / MUESTRA DEFECTO con una botella a la vista.",
+            )
+            return detectando
+        self._entrenando = True
+        estado.agregar_evento(
+            "entrenamiento",
+            f"Entrenamiento del SKU '{self.sku}' iniciado (la detección queda en pausa)",
+        )
+
+        def al_terminar(ruta) -> None:
+            """Carga el clasificador recién entrenado y avisa en la HMI."""
+            if ruta is not None:
+                try:
+                    self.clasificador = Clasificador(ruta)
+                    estado.agregar_evento(
+                        "entrenamiento",
+                        "Modelo listo: tocá INICIAR DETECCIÓN para inspeccionar",
+                    )
+                except Exception as error:
+                    estado.agregar_evento("entrenamiento", f"Error al cargar modelo: {error}")
+            self._entrenando = False
+
+        entrenar_en_hilo(
+            self._carpeta_sku(),
+            self._modelos_sku(),
+            informar=lambda mensaje: estado.agregar_evento("entrenamiento", mensaje),
+            al_terminar=al_terminar,
+        )
+        return False
+
+    @staticmethod
+    def _nombre_clase_valido(clase: str) -> str:
+        """Convierte el nombre de clase de la HMI en un nombre de carpeta seguro."""
+        limpio = "".join(c for c in clase.lower().strip() if c.isalnum() or c in "_-")
+        return limpio or "defecto"
+
+    def _guardar_muestras(
+        self, cuadro: np.ndarray, detecciones: sv.Detections | None, clase: str
+    ) -> int:
+        """Guarda el cuadro completo y el recorte de cada botella en dataset/<clase>/.
+
+        El entrenamiento usa solo los recortes (`*_bot*.jpg`); el cuadro
+        completo queda como referencia. Devuelve cuántos recortes se guardaron.
+        """
+        carpeta = self._carpeta_sku() / clase
+        carpeta.mkdir(parents=True, exist_ok=True)
+        marca = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        cv2.imwrite(str(carpeta / f"{marca}_cuadro.jpg"), cuadro)
+        recortes = 0
+        if detecciones is not None and len(detecciones) > 0:
+            alto_cuadro, ancho_cuadro = cuadro.shape[:2]
+            for i, caja in enumerate(detecciones.xyxy):
+                x1, y1, x2, y2 = (int(v) for v in caja)
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(ancho_cuadro, x2), min(alto_cuadro, y2)
+                if x2 - x1 > 10 and y2 - y1 > 10:
+                    cv2.imwrite(str(carpeta / f"{marca}_bot{i}.jpg"), cuadro[y1:y2, x1:x2])
+                    recortes += 1
+        return recortes
+
+    def _detectar_defectos(
+        self, cuadro: np.ndarray, detecciones: sv.Detections
+    ) -> dict[int, str]:
+        """Junta alertas de defecto por tracker_id: clasificador entrenado,
+        clases del modelo detector y heurística de inspección."""
+        alertas: dict[int, str] = {}
+        if detecciones.tracker_id is None:
+            return alertas
+        if self.clasificador is not None:
+            alto_cuadro, ancho_cuadro = cuadro.shape[:2]
+            for caja, tracker_id in zip(detecciones.xyxy, detecciones.tracker_id):
+                x1, y1, x2, y2 = (int(v) for v in caja)
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(ancho_cuadro, x2), min(alto_cuadro, y2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                clase = self.clasificador.clasificar_botella(
+                    cuadro[y1:y2, x1:x2], int(tracker_id)
+                )
+                if clase is not None and clase != "ok":
+                    alertas[int(tracker_id)] = clase
+        if self.clases_defecto:
+            nombres = self.detector.nombres_clases
+            for clase_id, tracker_id in zip(detecciones.class_id, detecciones.tracker_id):
+                if int(clase_id) in self.clases_defecto:
+                    alertas.setdefault(int(tracker_id), str(nombres.get(int(clase_id), clase_id)))
+        if self.inspector is not None:
+            for resultado in self.inspector.inspeccionar(cuadro, detecciones):
+                if resultado.alerta:
+                    alertas.setdefault(resultado.tracker_id, resultado.alerta)
+        return alertas
+
+    def _descartar_defectuosas(
+        self,
+        detecciones: sv.Detections,
+        cruzaron: np.ndarray,
+        alertas: dict[int, str],
+        descartadas: set[int],
+        estado: EstadoTablero | None,
+    ) -> int:
+        """Activa la válvula para cada botella defectuosa que cruza la línea.
+
+        Devuelve cuántos descartes nuevos hubo. Cada tracker_id se descarta una
+        sola vez, aunque siga apareciendo en cuadros siguientes.
+        """
+        if not alertas or detecciones.tracker_id is None:
+            return 0
+        nuevos = 0
+        for tracker_id, cruzo in zip(detecciones.tracker_id, cruzaron):
+            tid = int(tracker_id)
+            if cruzo and tid in alertas and tid not in descartadas:
+                descartadas.add(tid)
+                nuevos += 1
+                if self.valvula is not None:
+                    self.valvula.descartar()
+                if estado is not None:
+                    estado.agregar_evento(
+                        "descarte", f"Botella #{tid} descartada: {alertas[tid]}"
+                    )
+        return nuevos
+
+    def _publicar(
+        self,
+        estado: EstadoTablero,
+        cuadro: np.ndarray,
+        velocidad: EstimadorVelocidad,
+        detecciones: sv.Detections | None,
+        detectando: bool,
+        defectos_total: int,
+        instante: float,
+        ultimo_cruce: float | None,
+    ) -> None:
+        """Publica el cuadro anotado y las estadísticas para el tablero web."""
+        ok_jpeg, jpeg = cv2.imencode(".jpg", cuadro, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not ok_jpeg:
+            return
+        sin_cruce = 1e9 if ultimo_cruce is None else instante - ultimo_cruce
+        valvula_info = None
+        if self.valvula is not None:
+            valvula_info = {
+                "simulada": self.valvula.simulada,
+                "activaciones": self.valvula.activaciones,
+            }
+        estado.publicar(
+            jpeg.tobytes(),
+            {
+                "total": velocidad.total,
+                "bpm": round(velocidad.botellas_por_minuto(), 1),
+                "bpm_promedio": round(velocidad.promedio_botellas_por_minuto(), 1),
+                "en_cuadro": len(detecciones) if detecciones is not None else 0,
+                "defectos": defectos_total,
+                "detectando": detectando,
+                "entrenando": self._entrenando,
+                "clasificador_activo": self.clasificador is not None,
+                "sku": self.sku,
+                "muestras": self._muestras_sku(),
+                "valvula": valvula_info,
+                "segundos_sin_cruce": round(sin_cruce, 1),
+                "hora": time.time(),
+            },
+        )
+
+    @staticmethod
+    def _anotar_pausa(cuadro: np.ndarray) -> np.ndarray:
+        """Marca visualmente que la detección está en pausa (video sigue en vivo)."""
+        capa = cuadro.copy()
+        cv2.rectangle(capa, (8, 8), (330, 44), (0, 0, 0), -1)
+        cuadro = cv2.addWeighted(capa, 0.55, cuadro, 0.45, 0)
+        cv2.putText(
+            cuadro, "DETECCION EN PAUSA", (16, 34),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 80, 235), 2, cv2.LINE_AA,
+        )
+        return cuadro
 
     def _anotar(
         self,
@@ -202,7 +578,7 @@ class ContadorBotellas:
                 texto = f"#{tracker_id} {conf:.2f}"
                 alerta = alertas.get(int(tracker_id))
                 if alerta:
-                    texto += f" ⚠{alerta}"
+                    texto += f" DEFECTO:{alerta}"
                 etiquetas.append(texto)
 
         cuadro = anotador_trazas.annotate(cuadro, detecciones)

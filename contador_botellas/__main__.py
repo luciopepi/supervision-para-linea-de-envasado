@@ -1,10 +1,16 @@
 """CLI del contador de botellas: `python -m contador_botellas --ayuda`."""
 
 import argparse
+import socket
+from pathlib import Path
 
+from .clasificador import Clasificador
 from .contador import ConfiguracionLinea, ContadorBotellas
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
+from .registro import RegistroProduccion
+from .salidas import ValvulaDescarte
+from .tablero import EstadoTablero, iniciar_tablero
 
 
 def crear_parser() -> argparse.ArgumentParser:
@@ -79,7 +85,101 @@ def crear_parser() -> argparse.ArgumentParser:
         default=None,
         help="Procesar como máximo N cuadros (útil para pruebas rápidas)",
     )
+    parser.add_argument(
+        "--tablero",
+        action="store_true",
+        help="Servir el tablero de control web (video en vivo + estadísticas)",
+    )
+    parser.add_argument(
+        "--puerto",
+        type=int,
+        default=8000,
+        help="Puerto del tablero web (por defecto 8000)",
+    )
+    parser.add_argument(
+        "--registro",
+        default="registros",
+        help="Carpeta donde guardar los CSV diarios de producción por minuto",
+    )
+    parser.add_argument(
+        "--sin-registro",
+        action="store_true",
+        help="No guardar el registro de producción por minuto",
+    )
+    parser.add_argument(
+        "--resolucion",
+        default="1280x720",
+        help='Resolución pedida a la cámara web, formato "1280x720"',
+    )
+    parser.add_argument(
+        "--tamano-inferencia",
+        type=int,
+        default=640,
+        help="Tamaño de imagen para la red (480 o 416 = más fluido en CPU)",
+    )
+    parser.add_argument(
+        "--clases-defecto",
+        type=int,
+        nargs="*",
+        default=None,
+        help="IDs de clases del modelo propio que son defectos (activan el descarte)",
+    )
+    parser.add_argument(
+        "--valvula-puerto",
+        default=None,
+        help='Puerto serie del relé de la válvula de descarte (ej. "COM3"). '
+        "Sin este parámetro la válvula queda en modo simulado.",
+    )
+    parser.add_argument(
+        "--valvula-retardo",
+        type=int,
+        default=500,
+        help="Milisegundos entre que la botella cruza la línea y el soplido",
+    )
+    parser.add_argument(
+        "--valvula-duracion",
+        type=int,
+        default=300,
+        help="Milisegundos que dura el soplido de descarte",
+    )
+    parser.add_argument(
+        "--valvula-protocolo",
+        choices=["arduino", "lcus"],
+        default="arduino",
+        help="Protocolo del relé USB: arduino (bytes '1'/'0') o lcus (LCUS-1/2)",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="dataset",
+        help="Carpeta donde guardar las muestras capturadas desde la HMI",
+    )
+    parser.add_argument(
+        "--modelos",
+        default="modelos",
+        help="Carpeta del clasificador de defectos entrenado en el equipo",
+    )
+    parser.add_argument(
+        "--sku",
+        default="general",
+        help="Producto activo al arrancar: sus muestras van a dataset/<sku>/ y "
+        "su modelo a modelos/<sku>/ (también se cambia desde la HMI)",
+    )
+    parser.add_argument(
+        "--iniciar-detenido",
+        action="store_true",
+        help="Arrancar con la detección en pausa (se inicia desde la HMI)",
+    )
     return parser
+
+
+def ip_local() -> str:
+    """Mejor IP local para mostrar la URL del tablero en la red."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return "localhost"
 
 
 def main() -> None:
@@ -91,15 +191,55 @@ def main() -> None:
         confianza=args.confianza,
         clases=args.clases,
         dispositivo=args.dispositivo,
+        tamano_inferencia=args.tamano_inferencia,
     )
     linea = ConfiguracionLinea(orientacion=args.linea, posicion=args.posicion_linea)
     inspector = InspectorBotellas() if args.inspeccion else None
+    valvula = ValvulaDescarte(
+        puerto=args.valvula_puerto,
+        retardo_ms=args.valvula_retardo,
+        duracion_ms=args.valvula_duracion,
+        protocolo=args.valvula_protocolo,
+    )
+    # Si el SKU ya tiene un clasificador entrenado en el equipo, se carga solo.
+    clasificador = None
+    ruta_clasificador = Path(args.modelos) / args.sku / "clasificador.pt"
+    if ruta_clasificador.exists():
+        clasificador = Clasificador(ruta_clasificador)
+        print(f"Clasificador de defectos cargado: {ruta_clasificador}")
+
     contador = ContadorBotellas(
         detector=detector,
         linea=linea,
         ventana_velocidad=args.ventana_velocidad,
         inspector=inspector,
+        valvula=valvula,
+        clases_defecto=set(args.clases_defecto or []),
+        carpeta_muestras=args.dataset,
+        carpeta_modelos=args.modelos,
+        clasificador=clasificador,
+        sku=args.sku,
     )
+
+    try:
+        ancho_res, alto_res = (int(v) for v in args.resolucion.lower().split("x"))
+        resolucion = (ancho_res, alto_res)
+    except ValueError:
+        raise SystemExit(f'--resolucion inválida: "{args.resolucion}" (usar p. ej. 1280x720)')
+
+    estado = None
+    if args.tablero:
+        estado = EstadoTablero()
+        carpeta_registro = None if args.sin_registro else args.registro
+        iniciar_tablero(estado, args.puerto, carpeta_registro=carpeta_registro)
+        print(f"\nTablero de control disponible en:")
+        print(f"  → http://localhost:{args.puerto}   (en esta computadora)")
+        print(f"  → http://{ip_local()}:{args.puerto}   (desde otra compu o celular en la misma red)")
+
+    registro = None if args.sin_registro else RegistroProduccion(args.registro)
+    if registro is not None:
+        print(f"Registro de producción por minuto en: {args.registro}/")
+    print("Para salir: tecla q en la ventana de video, o Ctrl+C en esta consola.\n")
 
     resumen = contador.procesar(
         fuente=args.fuente,
@@ -107,10 +247,15 @@ def main() -> None:
         ruta_csv=args.csv,
         mostrar=args.mostrar,
         max_cuadros=args.max_cuadros,
+        estado_tablero=estado,
+        registro=registro,
+        resolucion=resolucion,
+        iniciar_detenido=args.iniciar_detenido,
     )
 
     print("\n===== RESUMEN =====")
     print(f"Botellas contadas : {int(resumen['total'])}")
+    print(f"Defectos descartados: {int(resumen['defectos'])}")
     print(f"Velocidad promedio: {resumen['bpm_promedio']:.1f} botellas/min")
     print(f"Duración procesada: {resumen['duracion_s']:.1f} s")
 

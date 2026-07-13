@@ -106,6 +106,11 @@ PAGINA_HTML = """<!doctype html>
   .chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px;
           border: 1px solid var(--borde); border-radius: 999px; font-weight: 700; font-size: 15px; }
   .chip .punto { width: 11px; height: 11px; border-radius: 50%; }
+  /* El SKU activo decide a qué producto van las muestras y qué modelo
+     inspecciona: el operario tiene que poder leerlo de un vistazo. */
+  #chip-sku { font-size: 24px; padding: 12px 24px; border-color: rgba(57,135,229,0.55); }
+  #chip-sku .punto { width: 14px; height: 14px; }
+  #chip-sku b { color: var(--serie); text-transform: uppercase; letter-spacing: .02em; }
   .hora { margin-left: auto; color: var(--tinta-2); font-size: 22px; font-weight: 600;
           font-variant-numeric: tabular-nums; }
   .rejilla { display: grid; grid-template-columns: minmax(0, 3fr) minmax(230px, 1fr);

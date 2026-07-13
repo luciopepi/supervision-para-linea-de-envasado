@@ -18,6 +18,7 @@ from .clasificador import (
     contar_muestras,
     entrenar_en_hilo,
 )
+from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
@@ -73,12 +74,15 @@ class ContadorBotellas:
         carpeta_modelos: str = "modelos",
         clasificador: Clasificador | None = None,
         sku: str = "general",
+        registro_detecciones: RegistroDetecciones | None = None,
     ) -> None:
         """Guarda los componentes del pipeline; el estado se crea en `procesar`.
 
         `sku` es el producto activo: las muestras van a `dataset/<sku>/<clase>/`
         y el modelo de defectos de ese producto a `modelos/<sku>/clasificador.pt`,
         así cada producto de la línea tiene su propio entrenamiento.
+        `registro_detecciones`, si se pasa, guarda foto y CSV de auditoría de
+        cada botella descartada (ver `detecciones.py`).
         """
         self.detector = detector
         self.linea = linea
@@ -90,9 +94,12 @@ class ContadorBotellas:
         self.carpeta_modelos = Path(carpeta_modelos)
         self.clasificador = clasificador
         self.sku = self._nombre_clase_valido(sku)
+        self.registro_detecciones = registro_detecciones
         self._entrenando = False
         self._muestras_cache: dict[str, int] = {}
         self._muestras_cache_hora: float = 0.0
+        self._skus_cache: dict[str, dict] = {}
+        self._skus_cache_hora: float = 0.0
 
     def _carpeta_sku(self) -> Path:
         """Carpeta de muestras del producto activo: dataset/<sku>/."""
@@ -106,12 +113,23 @@ class ContadorBotellas:
         """Activa otro producto: cambia carpeta de muestras y carga su modelo."""
         self.sku = self._nombre_clase_valido(nombre)
         self._muestras_cache_hora = 0.0
+        self._skus_cache_hora = 0.0
         ruta_modelo = self._modelos_sku() / "clasificador.pt"
         if ruta_modelo.exists():
-            self.clasificador = Clasificador(ruta_modelo)
-            estado.agregar_evento(
-                "estado", f"SKU activo: {self.sku} (modelo de defectos cargado)"
-            )
+            # Un archivo de modelo dañado no debe tumbar el pipeline: se avisa
+            # y el SKU queda activo sin clasificador (solo cuenta botellas).
+            try:
+                self.clasificador = Clasificador(ruta_modelo)
+                estado.agregar_evento(
+                    "estado", f"SKU activo: {self.sku} (modelo de defectos cargado)"
+                )
+            except Exception as error:
+                self.clasificador = None
+                estado.agregar_evento(
+                    "estado",
+                    f"SKU activo: {self.sku} — no se pudo cargar su modelo "
+                    f"({error}). Re-entrenalo desde la HMI.",
+                )
         else:
             self.clasificador = None
             estado.agregar_evento(
@@ -125,6 +143,44 @@ class ContadorBotellas:
             self._muestras_cache = contar_muestras(self._carpeta_sku())
             self._muestras_cache_hora = ahora
         return self._muestras_cache
+
+    def _listar_skus(self) -> dict[str, dict]:
+        """Lista los SKU conocidos con sus muestras por clase y si están entrenados.
+
+        Un SKU "conocido" es cualquier subcarpeta de `dataset/` o de
+        `modelos/` (salvo las carpetas internas de entrenamiento
+        `dataset_entrenamiento` y `corridas`), más el SKU activo aunque
+        todavía no tenga carpetas propias. Se usa para que la HMI ofrezca
+        una lista táctil de productos al iniciar la detección o al cambiar
+        de SKU. Cacheado 10 s como máximo (igual que `_muestras_sku`);
+        `_cambiar_sku` y la captura de muestras invalidan la caché.
+        """
+        ahora = time.monotonic()
+        if ahora - self._skus_cache_hora <= 10.0:
+            return self._skus_cache
+        carpetas_internas = {"dataset_entrenamiento", "corridas"}
+        nombres: set[str] = {self.sku}
+        if self.carpeta_muestras.exists():
+            nombres.update(
+                carpeta.name
+                for carpeta in self.carpeta_muestras.iterdir()
+                if carpeta.is_dir() and carpeta.name not in carpetas_internas
+            )
+        if self.carpeta_modelos.exists():
+            nombres.update(
+                carpeta.name
+                for carpeta in self.carpeta_modelos.iterdir()
+                if carpeta.is_dir() and carpeta.name not in carpetas_internas
+            )
+        self._skus_cache = {
+            nombre: {
+                "clases": contar_muestras(self.carpeta_muestras / nombre),
+                "entrenado": (self.carpeta_modelos / nombre / "clasificador.pt").exists(),
+            }
+            for nombre in sorted(nombres)
+        }
+        self._skus_cache_hora = ahora
+        return self._skus_cache
 
     def procesar(
         self,
@@ -229,7 +285,13 @@ class ContadorBotellas:
 
                     alertas = self._detectar_defectos(cuadro, detecciones)
                     defectos_total += self._descartar_defectuosas(
-                        detecciones, entrantes | salientes, alertas, descartadas, estado_tablero
+                        detecciones,
+                        entrantes | salientes,
+                        alertas,
+                        descartadas,
+                        estado_tablero,
+                        cuadro,
+                        velocidad,
                     )
 
                     cuadro = self._anotar(
@@ -328,6 +390,11 @@ class ContadorBotellas:
         for comando in estado.obtener_comandos():
             accion = comando.get("accion")
             if accion == "iniciar":
+                sku_pedido = comando.get("sku")
+                if sku_pedido:
+                    nombre_valido = self._nombre_clase_valido(str(sku_pedido))
+                    if nombre_valido != self.sku:
+                        self._cambiar_sku(nombre_valido, estado)
                 detectando = True
                 estado.agregar_evento("estado", "Detección iniciada")
             elif accion == "detener":
@@ -341,6 +408,7 @@ class ContadorBotellas:
                     detecciones = self.detector.detectar(cuadro)
                 recortes = self._guardar_muestras(cuadro, detecciones, clase)
                 self._muestras_cache_hora = 0.0
+                self._skus_cache_hora = 0.0
                 totales = ", ".join(f"{c}: {n}" for c, n in self._muestras_sku().items())
                 if recortes == 0:
                     estado.agregar_evento(
@@ -484,26 +552,43 @@ class ContadorBotellas:
         alertas: dict[int, str],
         descartadas: set[int],
         estado: EstadoTablero | None,
+        cuadro: np.ndarray,
+        velocidad: EstimadorVelocidad,
     ) -> int:
         """Activa la válvula para cada botella defectuosa que cruza la línea.
 
         Devuelve cuántos descartes nuevos hubo. Cada tracker_id se descarta una
-        sola vez, aunque siga apareciendo en cuadros siguientes.
+        sola vez, aunque siga apareciendo en cuadros siguientes. Si hay un
+        `RegistroDetecciones` configurado, guarda foto y fila de auditoría de
+        cada descarte nuevo (`cuadro` es el cuadro crudo, sin anotar).
         """
         if not alertas or detecciones.tracker_id is None:
             return 0
         nuevos = 0
-        for tracker_id, cruzo in zip(detecciones.tracker_id, cruzaron):
+        for caja, tracker_id, cruzo in zip(
+            detecciones.xyxy, detecciones.tracker_id, cruzaron
+        ):
             tid = int(tracker_id)
             if cruzo and tid in alertas and tid not in descartadas:
                 descartadas.add(tid)
                 nuevos += 1
                 if self.valvula is not None:
                     self.valvula.descartar()
-                if estado is not None:
-                    estado.agregar_evento(
-                        "descarte", f"Botella #{tid} descartada: {alertas[tid]}"
+                if self.registro_detecciones is not None:
+                    self.registro_detecciones.registrar(
+                        cuadro,
+                        caja,
+                        self.sku,
+                        tid,
+                        alertas[tid],
+                        velocidad.total,
+                        velocidad.botellas_por_minuto(),
                     )
+                    detalle = f"Botella #{tid} descartada: {alertas[tid]} (foto en detecciones/)"
+                else:
+                    detalle = f"Botella #{tid} descartada: {alertas[tid]}"
+                if estado is not None:
+                    estado.agregar_evento("descarte", detalle)
         return nuevos
 
     def _publicar(
@@ -541,6 +626,7 @@ class ContadorBotellas:
                 "clasificador_activo": self.clasificador is not None,
                 "sku": self.sku,
                 "muestras": self._muestras_sku(),
+                "skus": self._listar_skus(),
                 "valvula": valvula_info,
                 "segundos_sin_cruce": round(sin_cruce, 1),
                 "hora": time.time(),

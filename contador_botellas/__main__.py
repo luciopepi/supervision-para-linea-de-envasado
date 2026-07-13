@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .clasificador import Clasificador
 from .contador import ConfiguracionLinea, ContadorBotellas
+from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
@@ -169,6 +170,17 @@ def crear_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Arrancar con la detección en pausa (se inicia desde la HMI)",
     )
+    parser.add_argument(
+        "--detecciones",
+        default="detecciones",
+        help="Carpeta donde guardar las fotos y el CSV de cada defecto detectado "
+        "(auditoría del modelo)",
+    )
+    parser.add_argument(
+        "--sin-detecciones",
+        action="store_true",
+        help="No guardar fotos de defectos para auditoría",
+    )
     return parser
 
 
@@ -208,6 +220,10 @@ def main() -> None:
         clasificador = Clasificador(ruta_clasificador)
         print(f"Clasificador de defectos cargado: {ruta_clasificador}")
 
+    registro_detecciones = (
+        None if args.sin_detecciones else RegistroDetecciones(args.detecciones)
+    )
+
     contador = ContadorBotellas(
         detector=detector,
         linea=linea,
@@ -219,6 +235,7 @@ def main() -> None:
         carpeta_modelos=args.modelos,
         clasificador=clasificador,
         sku=args.sku,
+        registro_detecciones=registro_detecciones,
     )
 
     try:
@@ -239,6 +256,8 @@ def main() -> None:
     registro = None if args.sin_registro else RegistroProduccion(args.registro)
     if registro is not None:
         print(f"Registro de producción por minuto en: {args.registro}/")
+    if registro_detecciones is not None:
+        print(f"Fotos de defectos para auditoría en: {args.detecciones}/")
     print("Para salir: tecla q en la ventana de video, o Ctrl+C en esta consola.\n")
 
     resumen = contador.procesar(

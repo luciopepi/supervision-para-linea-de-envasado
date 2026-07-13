@@ -18,7 +18,8 @@ de conteo).
   detecciones, contadores grandes, botones INICIAR/DETENER, captura de
   muestras para entrenamiento, prueba de válvula, eventos y gráfico de
   velocidad — pensada para una pantalla táctil junto a la línea, visible
-  desde cualquier dispositivo de la red local.
+  desde cualquier dispositivo de la red local. Al tocar INICIAR DETECCIÓN se
+  abre una lista táctil para elegir el producto (SKU) que va a correr.
 - Comanda una **electroválvula de descarte** por relé USB (`--valvula-puerto`),
   con retardo y duración de soplido configurables; sin hardware funciona en
   modo simulado.
@@ -123,6 +124,8 @@ Duración procesada: 12.6 s
 | `--tamano-inferencia` | `640` | Tamaño de imagen para la red (480/416 = más fluido en CPU) |
 | `--iniciar-detenido` | — | Arrancar en pausa; se inicia desde la HMI |
 | `--dataset` | `dataset` | Carpeta de las muestras capturadas desde la HMI |
+| `--detecciones` | `detecciones` | Carpeta de las fotos y el CSV de auditoría de cada defecto detectado |
+| `--sin-detecciones` | — | No guardar fotos de defectos para auditoría |
 | `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
 | `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
 | `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
@@ -135,8 +138,12 @@ Duración procesada: 12.6 s
 
 Con `--tablero`, la interfaz web tiene botones grandes pensados para tocar:
 
-- **▶ INICIAR / ⏹ DETENER DETECCIÓN**: arranca o pausa el conteo (el video
-  sigue en vivo). Con `--iniciar-detenido` el sistema arranca en pausa.
+- **▶ INICIAR / ⏹ DETENER DETECCIÓN**: al tocar INICIAR se abre una lista
+  táctil con los productos (SKU) conocidos — nombre, muestras por clase y si
+  ya tienen modelo entrenado — para elegir con cuál arrancar; también se
+  puede cargar uno nuevo con **➕ NUEVO PRODUCTO**. DETENER pausa el conteo
+  directo (el video sigue en vivo). Con `--iniciar-detenido` el sistema
+  arranca en pausa.
 - **📷 MUESTRA OK / ⚠️ MUESTRA DEFECTO**: guarda el cuadro actual y el recorte
   de cada botella en `dataset/<clase>/`. MUESTRA DEFECTO pregunta el nombre
   del defecto (`sin_capsula`, `sin_etiqueta`, `botella_distinta`, ...).
@@ -180,6 +187,19 @@ Sin `--valvula-puerto`, la válvula queda en **modo simulado**: los descartes
 se registran como eventos (ideal para probar la lógica antes de armar el
 hardware).
 
+### Auditoría de detecciones
+
+Cada vez que una botella defectuosa cruza la línea y se descarta, el sistema
+guarda evidencia fotográfica en `detecciones/<AAAA-MM-DD>/` (salvo que se
+pase `--sin-detecciones`): el recorte de esa botella y el cuadro completo,
+como `bot<id>_<defecto>_<hora>.jpg` y `bot<id>_<defecto>_<hora>_cuadro.jpg`.
+Junto a las fotos queda un `detecciones.csv` del día con una fila por
+descarte: `hora, sku, botella, defecto, total_sesion, bpm, foto_recorte,
+foto_cuadro`. Sirve para revisar más tarde, mirando las fotos, si el modelo
+decidió bien o si conviene capturar más muestras de ese defecto. La carpeta
+se configura con `--detecciones` y un error de escritura en disco solo se
+avisa por consola, sin frenar la línea.
+
 ### Dónde queda todo guardado y cuánto ocupa
 
 Todo vive en la carpeta del programa (por ejemplo `C:\contador`):
@@ -189,6 +209,7 @@ Todo vive en la carpeta del programa (por ejemplo `C:\contador`):
 | `registros/` | Un CSV por día, una fila por minuto | ~5 KB por día (nada) |
 | `dataset/<sku>/<clase>/` | Fotos JPG de las muestras | recorte ~30 KB, cuadro ~200 KB; 50 muestras ≈ 10 MB |
 | `modelos/<sku>/` | El modelo entrenado del SKU | ~3–10 MB por SKU |
+| `detecciones/<AAAA-MM-DD>/` | Fotos y CSV de auditoría de cada defecto descartado | ~230 KB por defecto detectado |
 
 No se guardan videos (solo si pedís `--salida`). Los CSV se descargan desde
 la HMI con **⬇ DESCARGAR CSV**, que lista los días disponibles y baja el que
@@ -225,6 +246,7 @@ contador_botellas/
 ├── captura.py      → hilo de captura de cámara (resolución, sin retraso)
 ├── salidas.py      → válvula de descarte por relé USB (o modo simulado)
 ├── clasificador.py → entrenamiento y clasificación de defectos en el equipo
+├── detecciones.py  → fotos y CSV de auditoría de cada defecto descartado
 ├── registro.py     → CSV diarios de producción por minuto
 └── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 videos/             → videos de prueba de líneas de envasado
@@ -238,8 +260,10 @@ entrenado con tus muestras decide si es `ok` o qué defecto tiene (falta de
 cápsula, sin etiqueta, botella distinta, nivel bajo...).
 
 **Un modelo por producto (SKU):** el chip **SKU** del encabezado muestra el
-producto activo; tocándolo se cambia o se crea otro (por ejemplo
-`vinotinto750`, `aceite1l`). Cada SKU tiene sus propias muestras en
+producto activo; tocándolo abre la misma lista táctil de productos que
+INICIAR DETECCIÓN (sin arrancar el conteo) para cambiar a otro o crear uno
+nuevo (por ejemplo `vinotinto750`, `aceite1l`). Cada SKU tiene sus propias
+muestras en
 `dataset/<sku>/<clase>/` y su propio modelo en `modelos/<sku>/clasificador.pt`,
 que se carga automáticamente al cambiar de producto — el cambio de trabajo es
 tocar el chip y elegir el SKU. También se puede arrancar directo con

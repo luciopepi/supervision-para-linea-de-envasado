@@ -163,6 +163,29 @@ PAGINA_HTML = """<!doctype html>
   #aviso { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%);
     background: #262624; border: 1px solid var(--borde); border-radius: 10px;
     padding: 12px 22px; font-size: 17px; font-weight: 700; display: none; z-index: 20; }
+  /* Modal táctil de selección de SKU: se abre al iniciar la detección o al
+     tocar el chip de SKU, para que el operario elija el producto de una
+     lista en vez de escribirlo. */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 30;
+             display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .modal-tarjeta { background: var(--superficie); border: 1px solid var(--borde);
+                   border-radius: 14px; padding: 20px; width: min(560px, 100%);
+                   max-height: 90vh; display: flex; flex-direction: column; gap: 14px; }
+  .modal-tarjeta h2 { font-size: 19px; font-weight: 800; }
+  .lista-skus { overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+                min-height: 80px; }
+  .tarjeta-sku { display: flex; align-items: center; justify-content: space-between;
+                 gap: 12px; min-height: 64px; padding: 10px 14px; cursor: pointer;
+                 border: 2px solid var(--borde); border-radius: 10px;
+                 background: var(--superficie-2); }
+  .tarjeta-sku:active { filter: brightness(1.25); }
+  .tarjeta-sku.activo { border-color: var(--serie); }
+  .tarjeta-sku .nombre-sku { font-size: 20px; font-weight: 800; text-transform: uppercase; }
+  .tarjeta-sku .clases-sku { color: var(--tinta-2); font-size: 13px; margin-top: 2px; }
+  .etiqueta-modelo { font-size: 12px; font-weight: 700; padding: 4px 10px;
+                     border-radius: 999px; white-space: nowrap; }
+  .modal-botones { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  .modal-botones button.grande { min-height: 64px; }
 </style>
 </head>
 <body>
@@ -223,10 +246,21 @@ PAGINA_HTML = """<!doctype html>
 </div>
 <div id="aviso"></div>
 
+<div id="modal-sku" class="overlay" style="display:none">
+  <div class="modal-tarjeta">
+    <h2 id="modal-sku-titulo">¿Qué producto va a correr?</h2>
+    <div class="lista-skus" id="lista-skus">—</div>
+    <div class="modal-botones">
+      <button class="grande" id="btn-sku-nuevo"><span class="icono">➕</span>NUEVO PRODUCTO</button>
+      <button class="grande" id="btn-sku-cancelar">CANCELAR</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-let historial = [], detectando = false;
+let historial = [], detectando = false, skus = {}, modoModalSku = "iniciar";
 
 function formatoHora(t) {
   return new Date(t * 1000).toLocaleTimeString("es-AR", {hour12: false});
@@ -247,8 +281,11 @@ async function comando(cuerpo, mensaje) {
 }
 
 $("btn-marcha").addEventListener("click", () => {
-  comando({accion: detectando ? "detener" : "iniciar"},
-          detectando ? "Detección detenida" : "Detección iniciada");
+  if (detectando) {
+    comando({accion: "detener"}, "Detección detenida");
+  } else {
+    abrirModalSku("iniciar");
+  }
 });
 let ultimaClaseDefecto = "defecto";
 $("btn-ok").addEventListener("click", () =>
@@ -268,11 +305,71 @@ $("btn-entrenar").addEventListener("click", () => {
 });
 $("btn-valvula").addEventListener("click", () =>
   comando({accion: "probar_valvula"}, "Probando válvula…"));
-$("chip-sku").addEventListener("click", () => {
-  const sku = prompt("Nombre del producto/SKU a activar (se crea si no existe):",
-                     $("sku-nombre").textContent);
-  if (sku === null || !sku.trim()) return;
-  comando({accion: "cambiar_sku", sku: sku.trim()}, "Cambiando a SKU " + sku.trim());
+$("chip-sku").addEventListener("click", () => abrirModalSku("cambiar"));
+
+function abrirModalSku(modo) {
+  // "iniciar": elegir producto y arrancar la detección con él.
+  // "cambiar": solo activar el producto, sin tocar la detección.
+  modoModalSku = modo;
+  $("modal-sku-titulo").textContent = modo === "iniciar" ?
+    "¿Qué producto va a correr?" : "Cambiar de producto";
+  pintarSkusModal();
+  $("modal-sku").style.display = "flex";
+}
+
+function cerrarModalSku() {
+  $("modal-sku").style.display = "none";
+}
+
+let ultimoHtmlSkus = null;
+function pintarSkusModal() {
+  const nombres = Object.keys(skus).sort();
+  const contenedor = $("lista-skus");
+  if (!nombres.length) {
+    contenedor.innerHTML = "<div style='color:var(--tenue)'>Todavía no hay productos cargados.</div>";
+    ultimoHtmlSkus = null;
+    return;
+  }
+  const skuActivo = $("sku-nombre").textContent;
+  const html = nombres.map(nombre => {
+    const info = skus[nombre] || {clases: {}, entrenado: false};
+    const partes = Object.entries(info.clases || {}).map(([c, n]) => `${c}: ${n}`);
+    const detalle = partes.length ? partes.join(" · ") : "sin muestras todavía";
+    const etiqueta = info.entrenado
+      ? '<span class="etiqueta-modelo" style="background:rgba(12,163,12,0.18); color:var(--ok)">MODELO ✓</span>'
+      : '<span class="etiqueta-modelo" style="background:rgba(137,135,129,0.18); color:var(--tenue)">SIN MODELO</span>';
+    const clase = "tarjeta-sku" + (nombre === skuActivo ? " activo" : "");
+    return `<div class="${clase}" data-sku="${nombre}">` +
+           `<div><div class="nombre-sku">${nombre.toUpperCase()}</div>` +
+           `<div class="clases-sku">${detalle}</div></div>${etiqueta}</div>`;
+  }).join("");
+  // Redibujar solo si algo cambió: reconstruir el DOM en cada tick podría
+  // perder un toque que caiga justo en el instante del repintado.
+  if (html === ultimoHtmlSkus) return;
+  ultimoHtmlSkus = html;
+  contenedor.innerHTML = html;
+  contenedor.querySelectorAll(".tarjeta-sku").forEach(tarjeta => {
+    tarjeta.addEventListener("click", () => elegirSku(tarjeta.dataset.sku));
+  });
+}
+
+function elegirSku(nombre) {
+  cerrarModalSku();
+  if (modoModalSku === "iniciar") {
+    comando({accion: "iniciar", sku: nombre}, "Iniciando con SKU " + nombre.toUpperCase());
+  } else {
+    comando({accion: "cambiar_sku", sku: nombre}, "Cambiando a SKU " + nombre.toUpperCase());
+  }
+}
+
+$("btn-sku-nuevo").addEventListener("click", () => {
+  const nombre = prompt("Nombre del producto/SKU nuevo:", "");
+  if (nombre === null || !nombre.trim()) return;
+  elegirSku(nombre.trim());
+});
+$("btn-sku-cancelar").addEventListener("click", cerrarModalSku);
+$("modal-sku").addEventListener("click", (evento) => {
+  if (evento.target.id === "modal-sku") cerrarModalSku();
 });
 $("btn-csv").addEventListener("click", async () => {
   // Lista los días con registro y deja elegir cuál descargar.
@@ -300,6 +397,8 @@ async function actualizar() {
     const r = await fetch("/datos", {cache: "no-store"});
     const d = await r.json();
     detectando = !!d.detectando; pintarMarcha();
+    skus = d.skus || {};
+    if ($("modal-sku").style.display !== "none") pintarSkusModal();
     const entrenando = !!d.entrenando;
     $("btn-entrenar").disabled = entrenando;
     $("btn-entrenar").style.opacity = entrenando ? 0.5 : 1;

@@ -216,7 +216,13 @@ class ContadorBotellas:
         inicio = time.monotonic()
 
         zona = self.linea.crear_zona(ancho, alto)
-        rastreador = sv.ByteTrack(frame_rate=int(fps))
+        # La confianza del usuario se aplica acá (activación de rastros) y no
+        # en el detector: así ByteTrack recibe también las detecciones dudosas
+        # y sostiene el rastro de botellas borrosas u ocluidas junto a la línea.
+        rastreador = sv.ByteTrack(
+            frame_rate=int(fps),
+            track_activation_threshold=self.detector.confianza,
+        )
         velocidad = EstimadorVelocidad(ventana_segundos=self.ventana_velocidad)
 
         anotador_cajas = sv.BoxAnnotator(thickness=2)
@@ -270,7 +276,7 @@ class ContadorBotellas:
                     )
 
                 if detectando:
-                    detecciones = self.detector.detectar(cuadro)
+                    detecciones = self.detector.detectar_para_seguimiento(cuadro)
                     detecciones = rastreador.update_with_detections(detecciones)
                     ultimas_detecciones = detecciones
                     entrantes, salientes = zona.trigger(detecciones)

@@ -32,12 +32,22 @@ y comanda una electroválvula de descarte. HMI web táctil para el operario.
 ## Probar antes de entregar
 
 ```bash
-# prueba rápida de conteo con video real (debe dar 23 botellas, ~114 bot/min)
+# prueba rápida de conteo con video real
 python -m contador_botellas --fuente "videos/video_preview_h264.mp4" \
   --confianza 0.25 --posicion-linea 0.25 --sin-registro
 
 # HMI: levantar con --tablero y verificar / , /datos, /video y los botones
 ```
+
+Verdad de campo del video de referencia (contada a ojo por el usuario,
+2026-07): **26 botellas** cruzan la línea en x=0.25; la primera arranca ya
+sobre la línea, así que el máximo contable es **25**. La referencia
+histórica "23" estaba mal validada. Con el filtro de confianza aplicado
+antes del tracker el sistema contaba 22 (ultralytics 8.4.92 + supervision
+0.29.1, versiones hoy pinneadas en requirements.txt); tras mover el filtro
+al `track_activation_threshold` de ByteTrack el conteo esperado es cercano
+a 25 — validar siempre en la PC del usuario: en el sandbox de Claude no se
+puede descargar `yolov8n.pt`, así que esta prueba solo corre allá.
 
 Todo cambio en la HMI se verifica con captura de pantalla (Playwright con
 Chromium) antes de entregar. Todo cambio en el pipeline se corre contra los

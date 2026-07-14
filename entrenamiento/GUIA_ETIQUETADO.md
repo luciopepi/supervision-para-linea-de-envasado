@@ -28,9 +28,11 @@ derecho → Enviar a → Carpeta comprimida): lo vas a subir a Colab.
    ZIP, un modelo grande (Grounding DINO) marca solo las botellas, tapas,
    etiquetas y cajas que reconoce, y descargás un ZIP con ese borrador.
 2. Entrá a [makesense.ai](https://www.makesense.ai) → **Get Started** →
-   arrastrá las imágenes → *Object Detection*. Creá las 6 etiquetas con
-   estos nombres EXACTOS (minúsculas, con guion bajo):
-   `botella`, `tapa`, `etiqueta_frente`, `etiqueta_dorso`, `caja`, `separador`.
+   arrastrá las imágenes → *Object Detection*. Creá las 9 etiquetas con
+   estos nombres EXACTOS (minúsculas, sin acentos, con guion bajo) y **en
+   este orden** (el orden conecta los números del archivo con cada nombre):
+   `botella`, `tapa`, `etiqueta_frente`, `etiqueta_dorso`, `caja`,
+   `separador`, `corcho`, `capsula`, `nivel_llenado`.
 3. Importá el borrador: **Actions → Import annotations → YOLO format** y
    elegí los `.txt` del ZIP del paso 1.
 4. Corregí imagen por imagen: ajustá rectángulos corridos, agregá lo que
@@ -42,6 +44,14 @@ derecho → Enviar a → Carpeta comprimida): lo vas a subir a Colab.
      atención; toda cápsula visible debe tener su rectángulo.
    - **separador**: marcalo a mano (el borrador no lo conoce): es el
      cartón entre botellas visto desde arriba, aunque se vea de canto.
+   - **tapa / corcho / capsula**: `tapa` es la tapa a rosca; `corcho` el
+     corcho visible en la boca; `capsula` la cápsula que envuelve el
+     cuello. Se marca lo que se VE: si la cápsula tapa el corcho, solo
+     hay cápsula. El programa considera cerrada a la botella si tiene
+     cualquiera de los tres.
+   - **nivel_llenado**: rectángulo finito y ancho centrado en la línea
+     donde el líquido toca el aire (del ancho del cuello, poca altura).
+     Solo cuando la interfase se ve; en botellas opacas no se marca.
    - Regla de oro: **todo lo visible se marca**. Una botella a medias en
      el borde también. Lo que no está marcado, el modelo aprende que "no
      existe", y eso genera falsos negativos.

@@ -27,9 +27,24 @@ CLASE_ETIQUETA_FRENTE = "etiqueta_frente"
 CLASE_ETIQUETA_DORSO = "etiqueta_dorso"
 CLASE_CAJA = "caja"
 CLASE_SEPARADOR = "separador"
+CLASE_CORCHO = "corcho"
+CLASE_CAPSULA = "capsula"
+CLASE_NIVEL_LLENADO = "nivel_llenado"
 
 # Partes que se esperan ver en una botella individual (modo línea).
-PARTES_BOTELLA = (CLASE_TAPA, CLASE_ETIQUETA_FRENTE, CLASE_ETIQUETA_DORSO)
+PARTES_BOTELLA = (
+    CLASE_TAPA,
+    CLASE_ETIQUETA_FRENTE,
+    CLASE_ETIQUETA_DORSO,
+    CLASE_CORCHO,
+    CLASE_CAPSULA,
+    CLASE_NIVEL_LLENADO,
+)
+
+# Cualquiera de estos cierres visto sobre la botella cuenta como "tiene
+# cierre": tapa a rosca, corcho o cápsula según el producto. La alerta
+# `sin_tapa` se dispara solo si no se vio ninguno de los tres.
+CIERRES_BOTELLA = (CLASE_TAPA, CLASE_CORCHO, CLASE_CAPSULA)
 
 # Fracción mínima del área de una parte que tiene que caer dentro de la
 # botella/caja para considerarla asociada a ella. No es 1.0 porque una tapa
@@ -123,17 +138,18 @@ class AuditorPartes:
         """Devuelve las partes que le faltaron a una botella (o [] si no hay datos aún).
 
         Con menos de `MINIMO_CUADROS` cuadros vistos no hay datos suficientes
-        para opinar y devuelve lista vacía. "sin_tapa" si nunca se le vio una
-        `tapa`. "sin_etiqueta" solo si nunca se le vio NI `etiqueta_frente`
-        NI `etiqueta_dorso` (una botella normal solo muestra una de las dos
-        según cómo rota al pasar frente a la cámara; la falta se declara
-        solo si no apareció ninguna de las dos).
+        para opinar y devuelve lista vacía. "sin_tapa" solo si nunca se le
+        vio NINGÚN cierre (`tapa` a rosca, `corcho` o `capsula`: cuál
+        corresponde depende del producto, pero una botella cerrada muestra
+        al menos uno). "sin_etiqueta" solo si nunca se le vio NI
+        `etiqueta_frente` NI `etiqueta_dorso` (una botella normal solo
+        muestra una de las dos según cómo rota al pasar frente a la cámara).
         """
         if self._cuadros_vistos.get(tracker_id, 0) < MINIMO_CUADROS:
             return []
         vistas = self._partes_vistas.get(tracker_id, set())
         faltantes: list[str] = []
-        if CLASE_TAPA not in vistas:
+        if not vistas.intersection(CIERRES_BOTELLA):
             faltantes.append("sin_tapa")
         if CLASE_ETIQUETA_FRENTE not in vistas and CLASE_ETIQUETA_DORSO not in vistas:
             faltantes.append("sin_etiqueta")

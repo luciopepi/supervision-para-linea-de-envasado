@@ -44,11 +44,22 @@ derecho → Enviar a → Carpeta comprimida): lo vas a subir a Colab.
      atención; toda cápsula visible debe tener su rectángulo.
    - **separador**: marcalo a mano (el borrador no lo conoce): es el
      cartón entre botellas visto desde arriba, aunque se vea de canto.
+     Un solo rectángulo que contenga toda la cruz/separador (no uses
+     polígonos ni líneas: el modelo solo entiende rectángulos, y makesense
+     no exporta polígonos al formato YOLO).
    - **tapa / corcho / capsula**: `tapa` es la tapa a rosca; `corcho` el
      corcho visible en la boca; `capsula` la cápsula que envuelve el
      cuello. Se marca lo que se VE: si la cápsula tapa el corcho, solo
      hay cápsula. El programa considera cerrada a la botella si tiene
      cualquiera de los tres.
+   - **Cajas vistas desde arriba**: lo IMPORTANTE es marcar el cierre
+     (`tapa`/`corcho`/`capsula`) de cada botella — es lo que el modo caja
+     cuenta para saber cuántas botellas tapadas hay. El cuerpo de la
+     botella vista de arriba, con vino tinto y poca luz, casi no se ve:
+     marcá `botella` solo cuando se distinga, no te obligues. Marcá la
+     `caja` completa y el `separador`. Una caja de 6 con solo 5 cierres es
+     un defecto (falta una botella o una va sin tapar) — por eso el cierre
+     es la marca clave acá.
    - **nivel_llenado**: rectángulo finito y ancho centrado en la línea
      donde el líquido toca el aire (del ancho del cuello, poca altura).
      Solo cuando la interfase se ve; en botellas opacas no se marca.

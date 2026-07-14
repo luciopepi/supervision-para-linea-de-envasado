@@ -358,15 +358,21 @@ de descarte, foto de auditoría y evento que ya usan el clasificador de
 defectos y `--clases-defecto`.
 
 **Modo caja** (`--modo caja`): pensado para una segunda cámara cenital que
-mira las cajas ya armadas, antes de cerrarlas. Cuenta cuántas botellas trae
-cada caja (mediana de varias lecturas mientras pasa) y si tiene el separador
-de cartón; al cruzar la línea de conteo genera un evento
-`Caja #12: 6/6 botellas ✓` o `Caja #12: 5/6 botellas — INCOMPLETA`, y si está
-incompleta o le falta el separador, guarda foto de auditoría y descarta con
-la válvula, igual que una botella defectuosa. Requiere un modelo con la
-clase `caja`; sin ella el sistema avisa el error al arrancar en vez de
-intentar contar algo que no existe. La cantidad esperada de botellas por
-caja se configura con `--botellas-por-caja` (por defecto 6):
+mira las cajas ya armadas, antes de cerrarlas. Cuenta los **cierres**
+(tapa, corcho o cápsula) que ve dentro de cada caja —no las botellas—
+porque vista desde arriba y con poca luz una botella de vidrio oscuro casi
+no se distingue, pero el cierre queda mirando a la cámara. Así, con una sola
+cuenta, detecta dos defectos: si a la caja le falta una botella o si una
+botella va sin tapar, en ambos casos hay un cierre de menos. Usa la mediana
+de varias lecturas mientras la caja pasa y también verifica el separador de
+cartón; al cruzar la línea genera un evento
+`Caja #12: 6/6 botellas tapadas ✓` o
+`Caja #12: 5/6 botellas tapadas — INCOMPLETA (falta una botella o una tapa)`,
+y si está incompleta o le falta el separador, guarda foto de auditoría y
+descarta con la válvula, igual que una botella defectuosa. Requiere un
+modelo con la clase `caja`; sin ella el sistema avisa el error al arrancar
+en vez de intentar contar algo que no existe. La cantidad esperada por caja
+se configura con `--botellas-por-caja` (por defecto 6):
 
 ```bash
 python -m contador_botellas --fuente 0 --modelo modelo_partes.pt \

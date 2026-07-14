@@ -809,15 +809,17 @@ class ContadorBotellas:
         cuadro: np.ndarray,
         velocidad: EstimadorVelocidad,
     ) -> tuple[int, int]:
-        """Evalúa cada caja que cruza la línea: cantidad de botellas y separador.
+        """Evalúa cada caja que cruza la línea: cierres presentes y separador.
 
-        Cada tracker_id de caja se evalúa una sola vez, al cruzar. Siempre
-        agrega un evento con el resultado ("Caja #3: 6/6 botellas ✓" o
-        "...INCOMPLETA"); si está incompleta o (teniendo el modelo la clase
-        `separador`) no se vio el separador, además registra foto de
-        auditoría y activa la válvula de descarte (mismo flujo que una
-        botella defectuosa). Devuelve (cajas_completas_nuevas,
-        cajas_incompletas_nuevas) para acumular en el resumen.
+        Cuenta los cierres (tapa/corcho/cápsula) contenidos en la caja, no
+        las botellas: vistas de arriba y con poca luz el cierre es lo más
+        visible, y un cierre de menos delata tanto una botella faltante
+        como una botella sin tapar. Cada tracker_id de caja se evalúa una
+        sola vez, al cruzar. Siempre agrega un evento con el resultado
+        ("Caja #3: 6/6 botellas tapadas ✓" o "...INCOMPLETA"); si está
+        incompleta o (teniendo el modelo la clase `separador`) no se vio el
+        separador, además registra foto de auditoría y activa la válvula de
+        descarte. Devuelve (cajas_completas_nuevas, cajas_incompletas_nuevas).
         """
         completas = 0
         incompletas = 0
@@ -831,21 +833,24 @@ class ContadorBotellas:
                 continue
             procesadas.add(tid)
             resultado = auditor_cajas.resultado(tid, self.botellas_por_caja)
-            botellas, esperadas = resultado["botellas"], resultado["esperadas"]
+            cierres, esperadas = resultado["cierres"], resultado["esperadas"]
             completa = resultado["completa"]
             falta_separador = tiene_separador and not resultado["separador"]
             if completa:
                 completas += 1
-                texto = f"Caja #{tid}: {botellas}/{esperadas} botellas ✓"
+                texto = f"Caja #{tid}: {cierres}/{esperadas} botellas tapadas ✓"
             else:
                 incompletas += 1
-                texto = f"Caja #{tid}: {botellas}/{esperadas} botellas — INCOMPLETA"
+                texto = (
+                    f"Caja #{tid}: {cierres}/{esperadas} botellas tapadas — "
+                    f"INCOMPLETA (falta una botella o una tapa)"
+                )
             if falta_separador:
                 texto += ", sin separador"
             if estado is not None:
                 estado.agregar_evento("caja", texto)
             if not completa or falta_separador:
-                defecto = f"caja_{botellas}de{esperadas}" if not completa else "sin_separador"
+                defecto = f"caja_{cierres}de{esperadas}" if not completa else "sin_separador"
                 if self.valvula is not None:
                     self.valvula.descartar()
                 if self.registro_detecciones is not None:

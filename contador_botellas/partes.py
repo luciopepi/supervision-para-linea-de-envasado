@@ -168,13 +168,18 @@ class AuditorPartes:
 
 
 class AuditorCajas:
-    """Acumula, por caja (tracker_id), cuántas botellas se le vieron y si tuvo separador.
+    """Acumula, por caja (tracker_id), cuántos cierres se le vieron y si tuvo separador.
 
     Pensado para el modo "caja": una cámara cenital ve la caja abierta con
     las botellas adentro (y, si el packaging lo usa, un separador de
-    cartón). Se acumula por cuadro para no confiar en una sola lectura
-    donde una botella puede quedar tapada por un reflejo o la mano del
-    operario.
+    cartón). Se cuentan los CIERRES (tapa, corcho o cápsula), no las
+    botellas: vistas desde arriba y con poca luz, el cuerpo de una botella
+    de vidrio oscuro (vino tinto) casi no se distingue, pero el cierre
+    queda arriba mirando a la cámara y es lo más visible. Contar cierres
+    detecta de una dos defectos: si a la caja le falta una botella o si
+    una botella va sin tapar, en ambos casos hay un cierre de menos. Se
+    acumula por cuadro para no confiar en una sola lectura donde un cierre
+    puede quedar tapado por un reflejo o la mano del operario.
     """
 
     _MAX_IDS_EN_MEMORIA = 500
@@ -188,31 +193,32 @@ class AuditorCajas:
     def actualizar(
         self, cajas: sv.Detections, partes_xyxy: np.ndarray, partes_nombres: list[str]
     ) -> None:
-        """Cuenta, para cada caja de este cuadro, las botellas y el separador contenidos.
+        """Cuenta, para cada caja de este cuadro, los cierres y el separador contenidos.
 
-        Agrega la cantidad de botellas contenidas al historial de cada
-        tracker_id de caja (la mediana de ese historial es más robusta que
-        la lectura de un único cuadro) y marca si en algún cuadro se vio un
-        `separador` contenido en esa caja.
+        Agrega la cantidad de cierres contenidos (tapa, corcho o cápsula:
+        cada botella tapada aporta uno) al historial de cada tracker_id de
+        caja (la mediana de ese historial es más robusta que la lectura de
+        un único cuadro) y marca si en algún cuadro se vio un `separador`
+        contenido en esa caja.
         """
         if cajas.tracker_id is None or len(cajas) == 0:
             return
         cantidad_partes = len(partes_nombres)
         if cantidad_partes > 0:
             nombres = np.asarray(partes_nombres, dtype=object)
-            es_botella = nombres == CLASE_BOTELLA
+            es_cierre = np.isin(nombres, CIERRES_BOTELLA)
             es_separador = nombres == CLASE_SEPARADOR
             contenida = fraccion_contenida(cajas.xyxy, partes_xyxy) >= UMBRAL_CONTENCION
         else:
-            es_botella = es_separador = np.zeros(0, dtype=bool)
+            es_cierre = es_separador = np.zeros(0, dtype=bool)
             contenida = np.zeros((len(cajas), 0), dtype=bool)
 
         for indice_caja, tracker_id in enumerate(cajas.tracker_id):
             tid = int(tracker_id)
             fila = contenida[indice_caja]
-            cantidad_botellas = int(np.sum(fila & es_botella))
+            cantidad_cierres = int(np.sum(fila & es_cierre))
             vio_separador = bool(np.any(fila & es_separador))
-            self._historial.setdefault(tid, []).append(cantidad_botellas)
+            self._historial.setdefault(tid, []).append(cantidad_cierres)
             self._separador_visto[tid] = self._separador_visto.get(tid, False) or vio_separador
 
         self._limpiar_memoria()
@@ -220,17 +226,18 @@ class AuditorCajas:
     def resultado(self, tracker_id: int, esperadas: int) -> dict[str, int | bool]:
         """Resume el estado final de una caja al cruzar la línea.
 
-        `botellas` es la mediana entera del historial de cuentas por cuadro
+        `cierres` es la mediana entera del historial de cierres por cuadro
         (0 si nunca se acumuló historial para esa caja); `completa` es si esa
         mediana alcanza `esperadas`; `separador` es si alguna vez se vio la
-        clase `separador` contenida en esa caja.
+        clase `separador` contenida en esa caja. Un cierre de menos indica
+        que falta una botella o que una botella va sin tapar.
         """
         historial = self._historial.get(tracker_id, [])
-        botellas = int(round(np.median(historial))) if historial else 0
+        cierres = int(round(np.median(historial))) if historial else 0
         return {
-            "botellas": botellas,
+            "cierres": cierres,
             "esperadas": esperadas,
-            "completa": botellas >= esperadas,
+            "completa": cierres >= esperadas,
             "separador": self._separador_visto.get(tracker_id, False),
         }
 

@@ -5,6 +5,7 @@ import socket
 from pathlib import Path
 
 from .clasificador import Clasificador
+from .configuracion import ConfiguracionAjustable, cargar
 from .contador import ConfiguracionLinea, ContadorBotellas
 from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
@@ -197,6 +198,15 @@ def crear_parser() -> argparse.ArgumentParser:
         help="Cuántas botellas debe traer cada caja completa (solo --modo caja, "
         "por defecto 6)",
     )
+    parser.add_argument(
+        "--config",
+        default="configuracion.json",
+        help="Archivo con los ajustes editables desde la HMI (posición de línea, "
+        "confianza, tamaño de inferencia, tiempos de válvula, botellas por caja, "
+        "calidad de video). Si existe, SUS VALORES GANAN sobre los flags de "
+        "arriba para esos mismos campos; los flags solo definen el primer "
+        "arranque y lo que el archivo no traiga (por defecto configuracion.json)",
+    )
     return parser
 
 
@@ -214,19 +224,34 @@ def main() -> None:
     """Punto de entrada del CLI: arma el pipeline y procesa la fuente."""
     args = crear_parser().parse_args()
 
+    # Los flags definen el arranque; el archivo de configuración (editable
+    # desde la HMI) gana sobre ellos campo a campo si ya existe (ver
+    # `--config` en la ayuda y la sección "Pantalla de configuración" del
+    # README). `calidad_video` no tiene flag hoy: siempre parte del default.
+    config_desde_flags = ConfiguracionAjustable(
+        posicion_linea=args.posicion_linea,
+        orientacion_linea=args.linea,
+        confianza=args.confianza,
+        tamano_inferencia=args.tamano_inferencia,
+        valvula_retardo_ms=args.valvula_retardo,
+        valvula_duracion_ms=args.valvula_duracion,
+        botellas_por_caja=args.botellas_por_caja,
+    )
+    config = cargar(args.config, defecto=config_desde_flags)
+
     detector = DetectorBotellas(
         ruta_modelo=args.modelo,
-        confianza=args.confianza,
+        confianza=config.confianza,
         clases=args.clases,
         dispositivo=args.dispositivo,
-        tamano_inferencia=args.tamano_inferencia,
+        tamano_inferencia=config.tamano_inferencia,
     )
-    linea = ConfiguracionLinea(orientacion=args.linea, posicion=args.posicion_linea)
+    linea = ConfiguracionLinea(orientacion=config.orientacion_linea, posicion=config.posicion_linea)
     inspector = InspectorBotellas() if args.inspeccion else None
     valvula = ValvulaDescarte(
         puerto=args.valvula_puerto,
-        retardo_ms=args.valvula_retardo,
-        duracion_ms=args.valvula_duracion,
+        retardo_ms=config.valvula_retardo_ms,
+        duracion_ms=config.valvula_duracion_ms,
         protocolo=args.valvula_protocolo,
     )
     # Si el SKU ya tiene un clasificador entrenado en el equipo, se carga solo.
@@ -254,6 +279,8 @@ def main() -> None:
         registro_detecciones=registro_detecciones,
         modo=args.modo,
         botellas_por_caja=args.botellas_por_caja,
+        config=config,
+        ruta_config=args.config,
     )
 
     try:

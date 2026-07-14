@@ -131,7 +131,7 @@ PAGINA_HTML = """<!doctype html>
   .ficha .valor { font-size: clamp(34px, 4.5vw, 52px); font-weight: 800; line-height: 1.05; }
   .ficha .unidad { color: var(--tenue); font-size: 15px; font-weight: 500; }
   .ficha.defecto .valor { color: var(--critico); }
-  .botonera { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; }
+  .botonera { display: grid; grid-template-columns: 1.4fr repeat(5, 1fr); gap: 12px; }
   @media (max-width: 1100px) { .botonera { grid-template-columns: 1fr 1fr; } }
   button.grande { border: 1px solid var(--borde); border-radius: 12px; cursor: pointer;
     min-height: 76px; font: inherit; font-size: 19px; font-weight: 800; letter-spacing: .03em;
@@ -187,6 +187,28 @@ PAGINA_HTML = """<!doctype html>
                      border-radius: 999px; white-space: nowrap; }
   .modal-botones { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
   .modal-botones button.grande { min-height: 64px; }
+  /* Modal de configuración: una fila por parámetro, con botones táctiles
+     grandes (mínimo 56px de lado) para no ajustes por error con el dedo. */
+  .lista-config { overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+                  max-height: 62vh; }
+  .fila-config { display: flex; align-items: center; justify-content: space-between;
+                 gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--grilla); }
+  .fila-config:last-child { border-bottom: none; }
+  .etiqueta-config { font-size: 15px; font-weight: 600; color: var(--tinta-2);
+                      flex: 1 1 auto; min-width: 0; line-height: 1.25; }
+  .controles-config { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                       justify-content: flex-end; flex: 0 0 auto; }
+  .btn-paso-config { width: 56px; height: 56px; border-radius: 10px; border: 1px solid var(--borde);
+    background: var(--superficie-2); color: var(--tinta); font-size: 28px; font-weight: 800;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; font: inherit; }
+  .btn-paso-config:active { filter: brightness(1.3); transform: scale(0.95); }
+  .valor-config { min-width: 70px; text-align: center; font-size: 22px; font-weight: 800;
+                   font-variant-numeric: tabular-nums; }
+  .btn-opcion-config { min-height: 56px; min-width: 56px; padding: 8px 16px; border-radius: 10px;
+    border: 2px solid var(--borde); background: var(--superficie-2); color: var(--tinta-2);
+    font-size: 15px; font-weight: 800; cursor: pointer; font: inherit; }
+  .btn-opcion-config.activo { border-color: var(--serie); color: var(--tinta);
+                               background: rgba(57,135,229,0.18); }
 </style>
 </head>
 <body>
@@ -233,6 +255,7 @@ PAGINA_HTML = """<!doctype html>
   <button class="grande" id="btn-defecto"><span class="icono">⚠️</span>MUESTRA DEFECTO</button>
   <button class="grande" id="btn-entrenar"><span class="icono">🧠</span><span id="texto-entrenar">ENTRENAR MODELO</span></button>
   <button class="grande" id="btn-valvula"><span class="icono">💨</span>PROBAR VÁLVULA</button>
+  <button class="grande" id="btn-config"><span class="icono">⚙</span>CONFIGURACIÓN</button>
 </div>
 
 <div class="abajo">
@@ -255,6 +278,16 @@ PAGINA_HTML = """<!doctype html>
     <div class="modal-botones">
       <button class="grande" id="btn-sku-nuevo"><span class="icono">➕</span>NUEVO PRODUCTO</button>
       <button class="grande" id="btn-sku-cancelar">CANCELAR</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-config" class="overlay" style="display:none">
+  <div class="modal-tarjeta">
+    <h2>Configuración del sistema</h2>
+    <div class="lista-config" id="lista-config">—</div>
+    <div class="modal-botones" style="grid-template-columns: 1fr;">
+      <button class="grande" id="btn-config-cerrar">CERRAR</button>
     </div>
   </div>
 </div>
@@ -373,6 +406,104 @@ $("btn-sku-cancelar").addEventListener("click", cerrarModalSku);
 $("modal-sku").addEventListener("click", (evento) => {
   if (evento.target.id === "modal-sku") cerrarModalSku();
 });
+
+// --- Pantalla de configuración: un parámetro por fila, con botones táctiles
+// grandes. Los valores llegan en d.config (ver /datos → "config") y se
+// guardan en configuracion.json en el equipo; el operario los toca en
+// vivo y ve el efecto en el video (la línea de conteo se dibuja según la
+// posición vigente).
+const NOMBRE_CONFIG = {
+  posicion_linea: "Posición de la línea de conteo",
+  orientacion_linea: "Orientación de la línea de conteo",
+  confianza: "Confianza de detección",
+  tamano_inferencia: "Tamaño de imagen para la red (más chico = más fluido)",
+  valvula_retardo_ms: "Retardo del soplido (ms)",
+  valvula_duracion_ms: "Duración del soplido (ms)",
+  botellas_por_caja: "Botellas por caja",
+  calidad_video: "Calidad del video en pantalla",
+};
+const ORDEN_CONFIG = Object.keys(NOMBRE_CONFIG);
+let config = {valores: {}, limites: {}};
+let ultimoHtmlConfig = null;
+
+function formatoValorConfig(clave, valor) {
+  // posicion_linea y confianza son fracciones (0-1): dos decimales se leen
+  // mejor en la pantalla que "0.30000000000000004".
+  if (clave === "posicion_linea" || clave === "confianza") return Number(valor).toFixed(2);
+  return String(valor);
+}
+
+function pintarConfigModal() {
+  const contenedor = $("lista-config");
+  const valores = config.valores || {};
+  const limites = config.limites || {};
+  const html = ORDEN_CONFIG.filter(clave => clave in valores).map(clave => {
+    const lim = limites[clave] || {};
+    const valor = valores[clave];
+    let controles;
+    if (clave === "orientacion_linea") {
+      controles = ["vertical", "horizontal"].map(opcion =>
+        `<button class="btn-opcion-config${valor === opcion ? " activo" : ""}" ` +
+        `data-clave="${clave}" data-valor="${opcion}">${opcion.toUpperCase()}</button>`
+      ).join("");
+    } else if (clave === "tamano_inferencia") {
+      controles = (lim.opciones || []).map(opcion =>
+        `<button class="btn-opcion-config${valor === opcion ? " activo" : ""}" ` +
+        `data-clave="${clave}" data-valor="${opcion}">${opcion}</button>`
+      ).join("");
+    } else {
+      controles =
+        `<button class="btn-paso-config" data-clave="${clave}" data-signo="-1">−</button>` +
+        `<span class="valor-config">${formatoValorConfig(clave, valor)}</span>` +
+        `<button class="btn-paso-config" data-clave="${clave}" data-signo="1">+</button>`;
+    }
+    return `<div class="fila-config"><div class="etiqueta-config">${NOMBRE_CONFIG[clave]}</div>` +
+           `<div class="controles-config">${controles}</div></div>`;
+  }).join("");
+  // Mismo cuidado que en el modal de SKU: no reconstruir el DOM si no
+  // cambió nada, para no perder un toque que caiga justo en el repintado.
+  if (html === ultimoHtmlConfig) return;
+  ultimoHtmlConfig = html;
+  contenedor.innerHTML = html || "<div style='color:var(--tenue)'>Sin datos de configuración todavía.</div>";
+  contenedor.querySelectorAll(".btn-paso-config").forEach(boton => {
+    boton.addEventListener("click", () => {
+      const clave = boton.dataset.clave;
+      const lim = (config.limites || {})[clave] || {};
+      const actual = Number((config.valores || {})[clave] ?? 0);
+      const paso = Number(lim.paso ?? 1);
+      let siguiente = actual + Number(boton.dataset.signo) * paso;
+      if (lim.min !== undefined) siguiente = Math.max(lim.min, siguiente);
+      if (lim.max !== undefined) siguiente = Math.min(lim.max, siguiente);
+      siguiente = Math.round(siguiente * 1000) / 1000; // corrige arrastre de coma flotante
+      enviarConfig(clave, siguiente);
+    });
+  });
+  contenedor.querySelectorAll(".btn-opcion-config").forEach(boton => {
+    boton.addEventListener("click", () => {
+      const clave = boton.dataset.clave;
+      const valor = clave === "tamano_inferencia" ? Number(boton.dataset.valor) : boton.dataset.valor;
+      enviarConfig(clave, valor);
+    });
+  });
+}
+
+function enviarConfig(clave, valor) {
+  comando({accion: "configurar", clave: clave, valor: valor});
+}
+
+function abrirModalConfig() {
+  pintarConfigModal();
+  $("modal-config").style.display = "flex";
+}
+function cerrarModalConfig() {
+  $("modal-config").style.display = "none";
+}
+$("btn-config").addEventListener("click", abrirModalConfig);
+$("btn-config-cerrar").addEventListener("click", cerrarModalConfig);
+$("modal-config").addEventListener("click", (evento) => {
+  if (evento.target.id === "modal-config") cerrarModalConfig();
+});
+
 $("btn-csv").addEventListener("click", async () => {
   // Lista los días con registro y deja elegir cuál descargar.
   try {
@@ -401,6 +532,8 @@ async function actualizar() {
     detectando = !!d.detectando; pintarMarcha();
     skus = d.skus || {};
     if ($("modal-sku").style.display !== "none") pintarSkusModal();
+    config = d.config || {valores: {}, limites: {}};
+    if ($("modal-config").style.display !== "none") pintarConfigModal();
     const entrenando = !!d.entrenando;
     $("btn-entrenar").disabled = entrenando;
     $("btn-entrenar").style.opacity = entrenando ? 0.5 : 1;

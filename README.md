@@ -128,6 +128,7 @@ Duración procesada: 12.6 s
 | `--sin-detecciones` | — | No guardar fotos de defectos para auditoría |
 | `--modo` | `linea` | `linea` (contar botellas cruzando la línea) o `caja` (contar botellas por caja; ver [Detección de partes y modo caja](#detección-de-partes-y-modo-caja-en-preparación)) |
 | `--botellas-por-caja` | `6` | Botellas que debe traer cada caja completa (solo `--modo caja`) |
+| `--config` | `configuracion.json` | Archivo con los ajustes editables desde la HMI (ver [Pantalla de configuración](#pantalla-de-configuración)). Si existe, sus valores **ganan** sobre los flags de arriba para esos mismos campos |
 | `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
 | `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
 | `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
@@ -154,10 +155,41 @@ Con `--tablero`, la interfaz web tiene botones grandes pensados para tocar:
   [Detección de defectos](#detección-de-defectos-entrenar-desde-la-hmi)).
 - **💨 PROBAR VÁLVULA**: dispara un pulso de la válvula para verificar el
   conexionado.
+- **⚙ CONFIGURACIÓN**: abre la pantalla táctil de ajustes (ver
+  [Pantalla de configuración](#pantalla-de-configuración)).
 - **Eventos**: cada descarte, muestra o cambio de estado queda listado con su hora.
 
 Para pantalla completa en la PC táctil: abrir el navegador con `F11`, o crear
 un acceso directo de Chrome/Edge con `--kiosk http://localhost:8000`.
+
+### Pantalla de configuración
+
+Tocando **⚙ CONFIGURACIÓN** se abre un modal con los parámetros que el
+operario puede ajustar sin tocar el `cmd`, cada uno con botones táctiles
+grandes (`−`/`+`, o botones de opción fija para orientación y tamaño de
+imagen):
+
+- **Posición de la línea de conteo** — se ve en vivo en el video: cada toque
+  mueve la línea dibujada al instante.
+- **Orientación de la línea de conteo** (vertical/horizontal).
+- **Confianza de detección**.
+- **Tamaño de imagen para la red** (416/480/640/960 — más chico = más
+  fluido en CPU).
+- **Retardo del soplido** y **Duración del soplido** (ms) de la válvula de
+  descarte.
+- **Botellas por caja** (solo tiene efecto en `--modo caja`).
+- **Calidad del video en pantalla** (calidad JPEG del stream de la HMI: más
+  baja = más fluido con una red Wi-Fi floja).
+
+Cada ajuste se aplica **en caliente** (sin reiniciar el programa) y queda
+guardado en el archivo `--config` (por defecto `configuracion.json`, junto
+al programa). **Regla de precedencia**: al arrancar, si ese archivo ya
+existe, sus valores ganan sobre los flags de la línea de comandos para esos
+mismos campos; los flags solo definen el primer arranque (cuando el archivo
+todavía no existe) y lo que el archivo no traiga. En la práctica: la primera
+vez arrancás con los flags que quieras, y de ahí en adelante los ajustes que
+haga el operario desde la pantalla persisten solos, aunque cierres y abras
+el programa de nuevo con los flags de siempre.
 
 ### La válvula de descarte
 
@@ -244,6 +276,7 @@ contador_botellas/
 ├── contador.py     → pipeline: tracking + línea de conteo + anotación
 ├── detector.py     → detección YOLO → sv.Detections
 ├── velocidad.py    → botellas/min (ventana deslizante y promedio)
+├── configuracion.py → ajustes editables desde la HMI (persisten en configuracion.json)
 ├── tablero.py      → HMI táctil web (video en vivo, botones, eventos, gráfico)
 ├── captura.py      → hilo de captura de cámara (resolución, sin retraso)
 ├── salidas.py      → válvula de descarte por relé USB (o modo simulado)

@@ -18,6 +18,7 @@ from .clasificador import (
     contar_muestras,
     entrenar_en_hilo,
 )
+from .configuracion import ConfiguracionAjustable, como_dict, guardar, validar
 from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
@@ -74,6 +75,8 @@ class ContadorBotellas:
         self,
         detector: DetectorBotellas,
         linea: ConfiguracionLinea,
+        config: ConfiguracionAjustable,
+        ruta_config: str | Path,
         ventana_velocidad: float = 30.0,
         inspector: InspectorBotellas | None = None,
         valvula: ValvulaDescarte | None = None,
@@ -100,11 +103,23 @@ class ContadorBotellas:
         el separador; requiere un modelo propio con la clase `caja`, ver
         `partes.py`). `botellas_por_caja` es cuántas botellas debe traer cada
         caja completa (solo se usa en modo "caja").
+
+        `config` trae los parámetros ajustables desde la HMI (posición y
+        orientación de la línea, confianza, tamaño de inferencia, tiempos de
+        válvula, botellas por caja, calidad del video); `ruta_config` es
+        dónde persistirlos cuando el operario los cambia desde la pantalla de
+        configuración (comando `"configurar"`, ver `_configurar`). `linea` y
+        `botellas_por_caja` se siguen aceptando como parámetros sueltos por
+        compatibilidad, pero los valores que realmente se usan salen de
+        `config` (se aplican al arrancar `procesar` y quedan sincronizados
+        con cada cambio en caliente).
         """
         if modo not in ("linea", "caja"):
             raise ValueError(f"Modo inválido: '{modo}' (usar 'linea' o 'caja')")
         self.detector = detector
         self.linea = linea
+        self.config = config
+        self.ruta_config = Path(ruta_config)
         self.ventana_velocidad = ventana_velocidad
         self.inspector = inspector
         self.valvula = valvula
@@ -116,11 +131,20 @@ class ContadorBotellas:
         self.registro_detecciones = registro_detecciones
         self.modo = modo
         self.botellas_por_caja = botellas_por_caja
+        self.calidad_video = config.calidad_video
         self._entrenando = False
         self._muestras_cache: dict[str, int] = {}
         self._muestras_cache_hora: float = 0.0
         self._skus_cache: dict[str, dict] = {}
         self._skus_cache_hora: float = 0.0
+        # Zona/rastreador vigentes durante `procesar`; se recrean en caliente
+        # desde `_configurar` (línea o confianza) sin perder los totales, que
+        # viven en `EstimadorVelocidad`, no acá.
+        self._zona: sv.LineZone | None = None
+        self._rastreador: sv.ByteTrack | None = None
+        self._ancho: int | None = None
+        self._alto: int | None = None
+        self._fps: float | None = None
 
     def _carpeta_sku(self) -> Path:
         """Carpeta de muestras del producto activo: dataset/<sku>/."""
@@ -221,6 +245,21 @@ class ContadorBotellas:
         `estado_tablero`, publica cada cuadro anotado, las estadísticas y
         atiende los comandos de la HMI (iniciar/detener, muestras, válvula).
         """
+        # La configuración ajustable manda sobre los parámetros sueltos que
+        # se pasaron al constructor: se aplica acá para que un arranque con
+        # `configuracion.json` ya existente (o retomado tras un cambio en
+        # caliente en una corrida anterior) siempre parta de esos valores.
+        self.detector.confianza = self.config.confianza
+        self.detector.tamano_inferencia = self.config.tamano_inferencia
+        self.linea = ConfiguracionLinea(
+            orientacion=self.config.orientacion_linea, posicion=self.config.posicion_linea
+        )
+        self.botellas_por_caja = self.config.botellas_por_caja
+        self.calidad_video = self.config.calidad_video
+        if self.valvula is not None:
+            self.valvula.retardo_ms = self.config.valvula_retardo_ms
+            self.valvula.duracion_ms = self.config.valvula_duracion_ms
+
         captura_cruda = self._abrir_fuente(fuente, resolucion)
         # Con cámara o stream el reloj de pared es la referencia de tiempo;
         # con un archivo se usa el tiempo del video para que la velocidad no
@@ -236,13 +275,18 @@ class ContadorBotellas:
         captura = CapturaEnVivo(captura_cruda) if en_vivo else captura_cruda
         inicio = time.monotonic()
 
-        zona = self.linea.crear_zona(ancho, alto)
+        # Guardados como atributos (y no variables locales) porque
+        # `_configurar` los recrea en caliente cuando el operario toca la
+        # pantalla de configuración; el bucle relee `self._zona`/
+        # `self._rastreador` en cada vuelta.
+        self._ancho, self._alto, self._fps = ancho, alto, fps
+        self._zona = self.linea.crear_zona(ancho, alto)
         # La confianza del usuario se aplica acá (activación de rastros) y no
         # en el detector: así ByteTrack recibe también las detecciones dudosas
         # y sostiene el rastro de botellas borrosas u ocluidas junto a la línea.
-        rastreador = sv.ByteTrack(
+        self._rastreador = sv.ByteTrack(
             frame_rate=int(fps),
-            track_activation_threshold=self.detector.confianza,
+            track_activation_threshold=self.config.confianza,
         )
         velocidad = EstimadorVelocidad(ventana_segundos=self.ventana_velocidad)
 
@@ -338,9 +382,13 @@ class ContadorBotellas:
                         detecciones = detecciones[es_principal]
                     else:
                         detecciones_partes = detecciones[np.zeros(len(detecciones), dtype=bool)]
-                    detecciones = rastreador.update_with_detections(detecciones)
+                    # Se relee `self._rastreador`/`self._zona` en cada vuelta
+                    # (y no una copia local tomada antes del bucle) porque
+                    # `_configurar` puede reemplazarlos en caliente al tocar
+                    # confianza, posición u orientación de la línea.
+                    detecciones = self._rastreador.update_with_detections(detecciones)
                     ultimas_detecciones = detecciones
-                    entrantes, salientes = zona.trigger(detecciones)
+                    entrantes, salientes = self._zona.trigger(detecciones)
                     cruces = int(np.sum(entrantes)) + int(np.sum(salientes))
                     velocidad.registrar_cruces(cruces, instante)
                     if cruces:
@@ -389,7 +437,7 @@ class ContadorBotellas:
                         cajas_incompletas += nuevas_incompletas
 
                     cuadro = self._anotar(
-                        cuadro, detecciones, zona, velocidad, alertas,
+                        cuadro, detecciones, self._zona, velocidad, alertas,
                         anotador_cajas, anotador_etiquetas, anotador_trazas, anotador_linea,
                     )
                 else:
@@ -528,7 +576,61 @@ class ContadorBotellas:
                     estado.agregar_evento("valvula", "Válvula no configurada (--valvula-puerto)")
             elif accion == "entrenar":
                 detectando = self._iniciar_entrenamiento(estado, detectando)
+            elif accion == "configurar":
+                self._configurar(estado, str(comando.get("clave", "")), comando.get("valor"))
         return detectando
+
+    def _configurar(self, estado: EstadoTablero, clave: str, valor: object) -> None:
+        """Aplica en caliente un ajuste pedido desde la pantalla de configuración.
+
+        Valida y clampea `valor` con `configuracion.validar`; si la clave no
+        existe o el valor no tiene sentido (por ejemplo una orientación que
+        no sea "vertical"/"horizontal"), no toca nada y deja un evento con el
+        error. Si es válido, actualiza `self.config`, aplica el cambio al
+        componente correspondiente y persiste la configuración completa en
+        `self.ruta_config`.
+        """
+        try:
+            valor_normalizado = validar(clave, valor)
+        except ValueError as error:
+            estado.agregar_evento("configuracion", f"⚠ No se pudo ajustar: {error}")
+            return
+
+        setattr(self.config, clave, valor_normalizado)
+
+        if clave in ("posicion_linea", "orientacion_linea"):
+            # Los totales de conteo viven en EstimadorVelocidad, no en la
+            # LineZone: recrearla no pierde lo ya contado.
+            self.linea = ConfiguracionLinea(
+                orientacion=self.config.orientacion_linea,
+                posicion=self.config.posicion_linea,
+            )
+            if self._ancho is not None and self._alto is not None:
+                self._zona = self.linea.crear_zona(self._ancho, self._alto)
+        elif clave == "confianza":
+            self.detector.confianza = valor_normalizado
+            if self._fps is not None:
+                # Se pierde el rastro un instante al recrear ByteTrack; es
+                # aceptable frente a mantener la confianza vieja hasta que el
+                # operario reinicie el proceso.
+                self._rastreador = sv.ByteTrack(
+                    frame_rate=int(self._fps), track_activation_threshold=valor_normalizado
+                )
+        elif clave == "tamano_inferencia":
+            self.detector.tamano_inferencia = valor_normalizado
+        elif clave == "valvula_retardo_ms":
+            if self.valvula is not None:
+                self.valvula.retardo_ms = valor_normalizado
+        elif clave == "valvula_duracion_ms":
+            if self.valvula is not None:
+                self.valvula.duracion_ms = valor_normalizado
+        elif clave == "botellas_por_caja":
+            self.botellas_por_caja = valor_normalizado
+        elif clave == "calidad_video":
+            self.calidad_video = valor_normalizado
+
+        guardar(self.config, self.ruta_config)
+        estado.agregar_evento("configuracion", f"Configuración: {clave} → {valor_normalizado}")
 
     def _iniciar_entrenamiento(self, estado: EstadoTablero, detectando: bool) -> bool:
         """Lanza el entrenamiento del clasificador en segundo plano.
@@ -767,7 +869,9 @@ class ContadorBotellas:
         cajas_incompletas: int = 0,
     ) -> None:
         """Publica el cuadro anotado y las estadísticas para el tablero web."""
-        ok_jpeg, jpeg = cv2.imencode(".jpg", cuadro, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        ok_jpeg, jpeg = cv2.imencode(
+            ".jpg", cuadro, [cv2.IMWRITE_JPEG_QUALITY, self.calidad_video]
+        )
         if not ok_jpeg:
             return
         sin_cruce = 1e9 if ultimo_cruce is None else instante - ultimo_cruce
@@ -793,6 +897,7 @@ class ContadorBotellas:
             "segundos_sin_cruce": round(sin_cruce, 1),
             "hora": time.time(),
             "modo": self.modo,
+            "config": como_dict(self.config),
         }
         if self.modo == "caja":
             datos["cajas_completas"] = cajas_completas

@@ -323,6 +323,14 @@ class ContadorBotellas:
         anotador_linea = sv.LineZoneAnnotator(
             thickness=2, text_scale=0.6, display_in_count=False, display_out_count=False
         )
+        # Anotadores de las partes (tapa/etiqueta/cápsula/separador/corcho...):
+        # se dibujan aparte de la clase principal para que el operario VEA qué
+        # partes reconoce el modelo propio y pueda validar el entrenamiento.
+        # El color sale del id de clase (por defecto en BoxAnnotator), así cada
+        # parte lleva su propio color. Con el modelo COCO no hay partes y estos
+        # anotadores no se usan nunca.
+        anotador_partes = sv.BoxAnnotator(thickness=1)
+        anotador_partes_etiquetas = sv.LabelAnnotator(text_scale=0.35, text_padding=2)
 
         escritor = None
         if ruta_salida:
@@ -439,6 +447,8 @@ class ContadorBotellas:
                     cuadro = self._anotar(
                         cuadro, detecciones, self._zona, velocidad, alertas,
                         anotador_cajas, anotador_etiquetas, anotador_trazas, anotador_linea,
+                        detecciones_partes, nombres_clases,
+                        anotador_partes, anotador_partes_etiquetas,
                     )
                 else:
                     ultimas_detecciones = None
@@ -932,8 +942,19 @@ class ContadorBotellas:
         anotador_etiquetas: sv.LabelAnnotator,
         anotador_trazas: sv.TraceAnnotator,
         anotador_linea: sv.LineZoneAnnotator,
+        detecciones_partes: sv.Detections | None = None,
+        nombres_clases: dict[int, str] | None = None,
+        anotador_partes: sv.BoxAnnotator | None = None,
+        anotador_partes_etiquetas: sv.LabelAnnotator | None = None,
     ) -> np.ndarray:
-        """Dibuja detecciones, línea de conteo y panel de estadísticas sobre el cuadro."""
+        """Dibuja detecciones, partes, línea de conteo y panel de estadísticas sobre el cuadro.
+
+        Además de la clase principal (botella o caja) con su rastro y su
+        tracker_id, dibuja las partes detectadas (`detecciones_partes`: tapa,
+        etiqueta, cápsula, separador...) con su nombre y confianza, para que el
+        operario vea qué reconoce el modelo propio. Con el modelo COCO
+        `detecciones_partes` viene vacío y no se dibuja ninguna parte.
+        """
         etiquetas = []
         if detecciones.tracker_id is not None:
             for tracker_id, conf in zip(detecciones.tracker_id, detecciones.confidence):
@@ -947,6 +968,25 @@ class ContadorBotellas:
         cuadro = anotador_cajas.annotate(cuadro, detecciones)
         if etiquetas:
             cuadro = anotador_etiquetas.annotate(cuadro, detecciones, labels=etiquetas)
+        # Las partes van encima de la botella porque suelen caer dentro de su
+        # recuadro; su etiqueta muestra el nombre de la clase y la confianza.
+        if (
+            detecciones_partes is not None
+            and len(detecciones_partes) > 0
+            and anotador_partes is not None
+            and anotador_partes_etiquetas is not None
+        ):
+            nombres = nombres_clases or {}
+            etiquetas_partes = [
+                f"{nombres.get(int(id_clase), id_clase)} {confianza:.2f}"
+                for id_clase, confianza in zip(
+                    detecciones_partes.class_id, detecciones_partes.confidence
+                )
+            ]
+            cuadro = anotador_partes.annotate(cuadro, detecciones_partes)
+            cuadro = anotador_partes_etiquetas.annotate(
+                cuadro, detecciones_partes, labels=etiquetas_partes
+            )
         cuadro = anotador_linea.annotate(cuadro, line_counter=zona)
 
         panel = [

@@ -2,10 +2,14 @@
 
 import argparse
 import socket
+import threading
+import webbrowser
 from pathlib import Path
 
 from .clasificador import Clasificador
+from .configuracion import cargar, guardar, par_resolucion, validar
 from .contador import ConfiguracionLinea, ContadorBotellas
+from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
 from .registro import RegistroProduccion
@@ -24,19 +28,21 @@ def crear_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--fuente",
-        required=True,
-        help='Fuente de video: índice de cámara ("0"), ruta a un .mp4 o URL rtsp://',
+        default=None,
+        help='Fuente de video: índice de cámara ("0"), ruta a un .mp4, URL rtsp:// '
+        "o la dirección de un celular usado como cámara. Si no se pasa, se usa "
+        "la guardada en el archivo de configuración (editable desde la HMI)",
     )
     parser.add_argument(
         "--modelo",
-        default="yolov8n.pt",
+        default=None,
         help="Ruta o nombre del modelo YOLO (por defecto yolov8n.pt, se descarga solo)",
     )
     parser.add_argument(
         "--confianza",
         type=float,
-        default=0.3,
-        help="Confianza mínima de detección (0-1, por defecto 0.3)",
+        default=None,
+        help="Confianza mínima de detección (0-1, por defecto 0.25)",
     )
     parser.add_argument(
         "--clases",
@@ -49,13 +55,13 @@ def crear_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--linea",
         choices=["vertical", "horizontal"],
-        default="vertical",
+        default=None,
         help="Orientación de la línea de conteo (vertical si las botellas avanzan de lado)",
     )
     parser.add_argument(
         "--posicion-linea",
         type=float,
-        default=0.5,
+        default=None,
         help="Posición de la línea como fracción del cuadro (0.5 = centro)",
     )
     parser.add_argument(
@@ -91,9 +97,15 @@ def crear_parser() -> argparse.ArgumentParser:
         help="Servir el tablero de control web (video en vivo + estadísticas)",
     )
     parser.add_argument(
+        "--abrir-navegador",
+        action="store_true",
+        help="Abrir el tablero en el navegador al arrancar (activa --tablero solo). "
+        "Es lo que usa el acceso directo del escritorio en Windows",
+    )
+    parser.add_argument(
         "--puerto",
         type=int,
-        default=8000,
+        default=None,
         help="Puerto del tablero web (por defecto 8000)",
     )
     parser.add_argument(
@@ -108,13 +120,13 @@ def crear_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resolucion",
-        default="1280x720",
+        default=None,
         help='Resolución pedida a la cámara web, formato "1280x720"',
     )
     parser.add_argument(
         "--tamano-inferencia",
         type=int,
-        default=640,
+        default=None,
         help="Tamaño de imagen para la red (480 o 416 = más fluido en CPU)",
     )
     parser.add_argument(
@@ -133,13 +145,13 @@ def crear_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--valvula-retardo",
         type=int,
-        default=500,
+        default=None,
         help="Milisegundos entre que la botella cruza la línea y el soplido",
     )
     parser.add_argument(
         "--valvula-duracion",
         type=int,
-        default=300,
+        default=None,
         help="Milisegundos que dura el soplido de descarte",
     )
     parser.add_argument(
@@ -169,7 +181,104 @@ def crear_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Arrancar con la detección en pausa (se inicia desde la HMI)",
     )
+    parser.add_argument(
+        "--detecciones",
+        default="detecciones",
+        help="Carpeta donde guardar las fotos y el CSV de cada defecto detectado "
+        "(auditoría del modelo)",
+    )
+    parser.add_argument(
+        "--sin-detecciones",
+        action="store_true",
+        help="No guardar fotos de defectos para auditoría",
+    )
+    parser.add_argument(
+        "--modo",
+        choices=["linea", "caja"],
+        default=None,
+        help="linea: contar botellas cruzando la línea (avisa sin_tapa/sin_etiqueta "
+        "con un modelo propio de partes). caja: contar botellas dentro de cajas "
+        "vistas desde arriba y verificar separador; requiere modelo propio con "
+        "la clase 'caja' (por defecto linea)",
+    )
+    parser.add_argument(
+        "--botellas-por-caja",
+        type=int,
+        default=None,
+        help="Cuántas botellas debe traer cada caja completa (solo --modo caja, "
+        "por defecto 6)",
+    )
+    parser.add_argument(
+        "--config",
+        default="configuracion.json",
+        help="Archivo con los ajustes editables desde la HMI (cámara, modelo, "
+        "resolución, posición de línea, confianza, tiempos de válvula...). "
+        "Manda sobre los valores por defecto, y un flag escrito a mano manda "
+        "sobre el archivo. Si no existe se crea al arrancar "
+        "(por defecto configuracion.json)",
+    )
     return parser
+
+
+# Flag de la línea de comandos → campo de `ConfiguracionAjustable`. Solo se
+# aplican los que el usuario escribió de verdad (los demás quedan en None):
+# así el archivo manda sobre los valores por defecto, y una prueba puntual
+# con `--modelo otro.pt` sigue ganando sobre el archivo sin editarlo.
+CLAVES_DESDE_FLAGS: dict[str, str] = {
+    "fuente": "fuente",
+    "modelo": "modelo",
+    "confianza": "confianza",
+    "linea": "orientacion_linea",
+    "posicion_linea": "posicion_linea",
+    "tamano_inferencia": "tamano_inferencia",
+    "resolucion": "resolucion_camara",
+    "valvula_retardo": "valvula_retardo_ms",
+    "valvula_duracion": "valvula_duracion_ms",
+    "valvula_puerto": "valvula_puerto_serie",
+    "botellas_por_caja": "botellas_por_caja",
+    "modo": "modo",
+    "puerto": "puerto",
+}
+
+
+def detector_entrenado(carpeta_modelos: str | Path) -> Path | None:
+    """Busca un detector de partes entrenado en el equipo, suelto en `modelos/`.
+
+    Devuelve `modelos/detector_partes.pt` (el nombre que usa la guía de
+    entrenamiento) si existe; si no, el único `.pt` suelto de esa carpeta,
+    ignorando los `clasificador.pt` (que son de defectos por SKU y viven en
+    subcarpetas). Con varios candidatos devuelve None: elegir por adivinanza
+    sería peor que preguntar.
+    """
+    carpeta = Path(carpeta_modelos)
+    if not carpeta.exists():
+        return None
+    preferido = carpeta / "detector_partes.pt"
+    if preferido.exists():
+        return preferido
+    sueltos = [ruta for ruta in sorted(carpeta.glob("*.pt")) if ruta.name != "clasificador.pt"]
+    return sueltos[0] if len(sueltos) == 1 else None
+
+
+def avisar_modelo_de_fabrica(config_modelo: str, carpeta_modelos: str | Path) -> str | None:
+    """Arma el aviso de estar corriendo el modelo de fábrica teniendo uno propio.
+
+    El modelo de fábrica (`yolov8n.pt`, COCO) solo reconoce "botella": si la
+    aplicación arranca con él pero en `modelos/` hay un detector entrenado, el
+    operario ve que no se detectan tapas ni etiquetas y no tiene forma de
+    saber por qué. Devuelve el texto del aviso, o None si no corresponde.
+    """
+    if Path(config_modelo).name != "yolov8n.pt":
+        return None
+    propio = detector_entrenado(carpeta_modelos)
+    if propio is None:
+        return None
+    return (
+        f"Estás usando el modelo de fábrica '{config_modelo}', que solo detecta "
+        f"botellas (ni tapas ni etiquetas). Tenés uno entrenado en '{propio}': "
+        f"para usarlo, tocá el engranaje ⚙ → 'Modelo de detección' y volvé a "
+        f"abrir la aplicación."
+    )
 
 
 def ip_local() -> str:
@@ -186,19 +295,64 @@ def main() -> None:
     """Punto de entrada del CLI: arma el pipeline y procesa la fuente."""
     args = crear_parser().parse_args()
 
-    detector = DetectorBotellas(
-        ruta_modelo=args.modelo,
-        confianza=args.confianza,
-        clases=args.clases,
-        dispositivo=args.dispositivo,
-        tamano_inferencia=args.tamano_inferencia,
-    )
-    linea = ConfiguracionLinea(orientacion=args.linea, posicion=args.posicion_linea)
+    # Precedencia: valores por defecto < archivo de configuración (lo que el
+    # operario tocó en la pantalla) < flags escritos a mano en esta corrida.
+    config = cargar(args.config)
+    for flag, clave in CLAVES_DESDE_FLAGS.items():
+        valor = getattr(args, flag)
+        if valor is None:
+            continue
+        try:
+            setattr(config, clave, validar(clave, valor))
+        except ValueError as error:
+            raise SystemExit(f"--{flag.replace('_', '-')}: {error}")
+
+    # Primer arranque: si ya hay un detector entrenado en el equipo se toma
+    # ese y no el de fábrica — quien entrenó su modelo quiere usarlo, y al
+    # arrancar con doble clic no hay ningún flag donde decirlo.
+    if not Path(args.config).exists():
+        if args.modelo is None:
+            propio = detector_entrenado(args.modelos)
+            if propio is not None:
+                config.modelo = str(propio)
+                print(f"Detector entrenado encontrado: {propio}")
+        guardar(config, args.config)
+        print(f"Configuración inicial guardada en: {args.config}")
+
+    aviso_modelo = avisar_modelo_de_fabrica(config.modelo, args.modelos)
+    if aviso_modelo is not None:
+        print(f"\n[AVISO] {aviso_modelo}\n")
+
+    # Abierta con doble clic no hay consola donde leer un traceback: los
+    # errores típicos de arranque se explican en castellano y se dice dónde
+    # se arregla cada uno desde la pantalla.
+    try:
+        detector = DetectorBotellas(
+            ruta_modelo=config.modelo,
+            confianza=config.confianza,
+            clases=args.clases,
+            dispositivo=args.dispositivo,
+            tamano_inferencia=config.tamano_inferencia,
+        )
+    except Exception as error:
+        raise SystemExit(
+            f"\n[ERROR] No se pudo cargar el modelo '{config.modelo}': {error}\n\n"
+            f"Revisá que el archivo exista (por ejemplo modelos\\detector_partes.pt).\n"
+            f"Se cambia desde el engranaje ⚙ de la pantalla, en 'Modelo de detección',\n"
+            f"o editando '{args.config}'."
+        )
+    # Qué reconoce el modelo cargado: es lo primero que hay que mirar cuando
+    # "no detecta las tapas" (casi siempre es que quedó el modelo de fábrica).
+    nombres_modelo = list(detector.nombres_clases.values())
+    listado = ", ".join(nombres_modelo[:9]) + ("…" if len(nombres_modelo) > 9 else "")
+    print(f"Modelo de detección: {config.modelo} — {len(nombres_modelo)} clases ({listado})")
+
+    linea = ConfiguracionLinea(orientacion=config.orientacion_linea, posicion=config.posicion_linea)
     inspector = InspectorBotellas() if args.inspeccion else None
     valvula = ValvulaDescarte(
-        puerto=args.valvula_puerto,
-        retardo_ms=args.valvula_retardo,
-        duracion_ms=args.valvula_duracion,
+        puerto=config.valvula_puerto_serie or None,
+        retardo_ms=config.valvula_retardo_ms,
+        duracion_ms=config.valvula_duracion_ms,
         protocolo=args.valvula_protocolo,
     )
     # Si el SKU ya tiene un clasificador entrenado en el equipo, se carga solo.
@@ -207,6 +361,10 @@ def main() -> None:
     if ruta_clasificador.exists():
         clasificador = Clasificador(ruta_clasificador)
         print(f"Clasificador de defectos cargado: {ruta_clasificador}")
+
+    registro_detecciones = (
+        None if args.sin_detecciones else RegistroDetecciones(args.detecciones)
+    )
 
     contador = ContadorBotellas(
         detector=detector,
@@ -219,39 +377,70 @@ def main() -> None:
         carpeta_modelos=args.modelos,
         clasificador=clasificador,
         sku=args.sku,
+        registro_detecciones=registro_detecciones,
+        modo=config.modo,
+        botellas_por_caja=config.botellas_por_caja,
+        config=config,
+        ruta_config=args.config,
     )
 
-    try:
-        ancho_res, alto_res = (int(v) for v in args.resolucion.lower().split("x"))
-        resolucion = (ancho_res, alto_res)
-    except ValueError:
-        raise SystemExit(f'--resolucion inválida: "{args.resolucion}" (usar p. ej. 1280x720)')
+    resolucion = par_resolucion(config.resolucion_camara)
 
     estado = None
-    if args.tablero:
+    # El acceso directo del escritorio arranca con --abrir-navegador: pedir
+    # además --tablero sería una trampa para el operario, así que lo implica.
+    servir_tablero = args.tablero or args.abrir_navegador
+    if servir_tablero:
         estado = EstadoTablero()
+        # El aviso también en la pantalla: el operario de la línea no mira la
+        # consola, y este es justo el error que lo deja sin detección de partes.
+        if aviso_modelo is not None:
+            estado.agregar_evento("estado", f"⚠ {aviso_modelo}")
+        else:
+            estado.agregar_evento(
+                "estado", f"Modelo cargado: {config.modelo} ({len(nombres_modelo)} clases)"
+            )
         carpeta_registro = None if args.sin_registro else args.registro
-        iniciar_tablero(estado, args.puerto, carpeta_registro=carpeta_registro)
+        iniciar_tablero(estado, config.puerto, carpeta_registro=carpeta_registro)
         print(f"\nTablero de control disponible en:")
-        print(f"  → http://localhost:{args.puerto}   (en esta computadora)")
-        print(f"  → http://{ip_local()}:{args.puerto}   (desde otra compu o celular en la misma red)")
+        print(f"  → http://localhost:{config.puerto}   (en esta computadora)")
+        print(f"  → http://{ip_local()}:{config.puerto}   (desde otra compu o celular en la misma red)")
+        if args.abrir_navegador:
+            # En un hilo aparte y con un respiro: si el navegador tarda en
+            # levantar, el pipeline no se queda esperándolo.
+            threading.Timer(
+                1.5, lambda: webbrowser.open(f"http://localhost:{config.puerto}")
+            ).start()
 
     registro = None if args.sin_registro else RegistroProduccion(args.registro)
     if registro is not None:
         print(f"Registro de producción por minuto en: {args.registro}/")
+    if registro_detecciones is not None:
+        print(f"Fotos de defectos para auditoría en: {args.detecciones}/")
     print("Para salir: tecla q en la ventana de video, o Ctrl+C en esta consola.\n")
 
-    resumen = contador.procesar(
-        fuente=args.fuente,
-        ruta_salida=args.salida,
-        ruta_csv=args.csv,
-        mostrar=args.mostrar,
-        max_cuadros=args.max_cuadros,
-        estado_tablero=estado,
-        registro=registro,
-        resolucion=resolucion,
-        iniciar_detenido=args.iniciar_detenido,
-    )
+    try:
+        resumen = contador.procesar(
+            fuente=config.fuente,
+            ruta_salida=args.salida,
+            ruta_csv=args.csv,
+            mostrar=args.mostrar,
+            max_cuadros=args.max_cuadros,
+            estado_tablero=estado,
+            registro=registro,
+            resolucion=resolucion,
+            iniciar_detenido=args.iniciar_detenido,
+        )
+    except (RuntimeError, FileNotFoundError) as error:
+        raise SystemExit(
+            f"\n[ERROR] {error}\n\n"
+            f"La fuente de video configurada es: '{config.fuente}'\n"
+            f"  · Cámara USB: probá 0, 1 o 2 (según cuál esté conectada).\n"
+            f"  · Celular como cámara: la dirección http:// que muestra la app.\n"
+            f"  · Archivo: la ruta al .mp4 tiene que existir.\n"
+            f"Se cambia desde el engranaje ⚙ de la pantalla, en 'Cámara o video',\n"
+            f"o editando '{args.config}'."
+        )
 
     print("\n===== RESUMEN =====")
     print(f"Botellas contadas : {int(resumen['total'])}")

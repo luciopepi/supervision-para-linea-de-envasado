@@ -1,5 +1,6 @@
-"""Estimación de velocidad de producción (botellas por minuto)."""
+"""Estimación de velocidad de producción (botellas por minuto) y del equipo."""
 
+import time
 from collections import deque
 
 
@@ -59,3 +60,43 @@ class EstimadorVelocidad:
         if transcurrido <= 0:
             return 0.0
         return self._total * 60.0 / transcurrido
+
+
+class MedidorCuadros:
+    """Mide cuántos cuadros por segundo alcanza a procesar la computadora.
+
+    Es el indicador de si el equipo da abasto: no importa qué tan rápido
+    corra el video de la cámara, sino cuántos cuadros llega a analizar el
+    detector por segundo. Con pocos cuadros por segundo una botella rápida
+    aparece en muy pocas imágenes y el seguidor puede perderle el rastro
+    (conteos de menos), además de verse entrecortado en la pantalla.
+
+    Usa el reloj de pared (no el tiempo del video) sobre una ventana de los
+    últimos cuadros, para que el número refleje el momento actual y no un
+    promedio de toda la corrida.
+    """
+
+    def __init__(self, ventana_cuadros: int = 30) -> None:
+        """Prepara la ventana con los instantes reales de los últimos cuadros."""
+        self._instantes: deque[float] = deque(maxlen=ventana_cuadros)
+
+    def registrar_cuadro(self) -> None:
+        """Anota que se terminó de procesar un cuadro, en este instante."""
+        self._instantes.append(time.monotonic())
+
+    def reiniciar(self) -> None:
+        """Olvida lo medido: se usa al reanudar tras una pausa.
+
+        Sin esto, el hueco de tiempo de la pausa se mezclaría con los cuadros
+        nuevos y mostraría una velocidad falsamente baja al retomar.
+        """
+        self._instantes.clear()
+
+    def cuadros_por_segundo(self) -> float:
+        """Cuadros por segundo de la ventana (0 si todavía no hay dos cuadros)."""
+        if len(self._instantes) < 2:
+            return 0.0
+        transcurrido = self._instantes[-1] - self._instantes[0]
+        if transcurrido <= 0:
+            return 0.0
+        return (len(self._instantes) - 1) / transcurrido

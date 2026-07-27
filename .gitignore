@@ -7,5 +7,8 @@ resultado*.mp4
 estadisticas*.csv
 runs/
 registros/
+configuracion.json
 dataset/
 modelos/
+detecciones/
+dataset_deteccion/

@@ -241,6 +241,46 @@ CLAVES_DESDE_FLAGS: dict[str, str] = {
 }
 
 
+def detector_entrenado(carpeta_modelos: str | Path) -> Path | None:
+    """Busca un detector de partes entrenado en el equipo, suelto en `modelos/`.
+
+    Devuelve `modelos/detector_partes.pt` (el nombre que usa la guía de
+    entrenamiento) si existe; si no, el único `.pt` suelto de esa carpeta,
+    ignorando los `clasificador.pt` (que son de defectos por SKU y viven en
+    subcarpetas). Con varios candidatos devuelve None: elegir por adivinanza
+    sería peor que preguntar.
+    """
+    carpeta = Path(carpeta_modelos)
+    if not carpeta.exists():
+        return None
+    preferido = carpeta / "detector_partes.pt"
+    if preferido.exists():
+        return preferido
+    sueltos = [ruta for ruta in sorted(carpeta.glob("*.pt")) if ruta.name != "clasificador.pt"]
+    return sueltos[0] if len(sueltos) == 1 else None
+
+
+def avisar_modelo_de_fabrica(config_modelo: str, carpeta_modelos: str | Path) -> str | None:
+    """Arma el aviso de estar corriendo el modelo de fábrica teniendo uno propio.
+
+    El modelo de fábrica (`yolov8n.pt`, COCO) solo reconoce "botella": si la
+    aplicación arranca con él pero en `modelos/` hay un detector entrenado, el
+    operario ve que no se detectan tapas ni etiquetas y no tiene forma de
+    saber por qué. Devuelve el texto del aviso, o None si no corresponde.
+    """
+    if Path(config_modelo).name != "yolov8n.pt":
+        return None
+    propio = detector_entrenado(carpeta_modelos)
+    if propio is None:
+        return None
+    return (
+        f"Estás usando el modelo de fábrica '{config_modelo}', que solo detecta "
+        f"botellas (ni tapas ni etiquetas). Tenés uno entrenado en '{propio}': "
+        f"para usarlo, tocá el engranaje ⚙ → 'Modelo de detección' y volvé a "
+        f"abrir la aplicación."
+    )
+
+
 def ip_local() -> str:
     """Mejor IP local para mostrar la URL del tablero en la red."""
     try:
@@ -267,11 +307,21 @@ def main() -> None:
         except ValueError as error:
             raise SystemExit(f"--{flag.replace('_', '-')}: {error}")
 
-    # Primer arranque: dejar el archivo escrito para que la pantalla de
-    # configuración tenga de dónde partir y el operario no dependa de flags.
+    # Primer arranque: si ya hay un detector entrenado en el equipo se toma
+    # ese y no el de fábrica — quien entrenó su modelo quiere usarlo, y al
+    # arrancar con doble clic no hay ningún flag donde decirlo.
     if not Path(args.config).exists():
+        if args.modelo is None:
+            propio = detector_entrenado(args.modelos)
+            if propio is not None:
+                config.modelo = str(propio)
+                print(f"Detector entrenado encontrado: {propio}")
         guardar(config, args.config)
         print(f"Configuración inicial guardada en: {args.config}")
+
+    aviso_modelo = avisar_modelo_de_fabrica(config.modelo, args.modelos)
+    if aviso_modelo is not None:
+        print(f"\n[AVISO] {aviso_modelo}\n")
 
     # Abierta con doble clic no hay consola donde leer un traceback: los
     # errores típicos de arranque se explican en castellano y se dice dónde
@@ -291,6 +341,12 @@ def main() -> None:
             f"Se cambia desde el engranaje ⚙ de la pantalla, en 'Modelo de detección',\n"
             f"o editando '{args.config}'."
         )
+    # Qué reconoce el modelo cargado: es lo primero que hay que mirar cuando
+    # "no detecta las tapas" (casi siempre es que quedó el modelo de fábrica).
+    nombres_modelo = list(detector.nombres_clases.values())
+    listado = ", ".join(nombres_modelo[:9]) + ("…" if len(nombres_modelo) > 9 else "")
+    print(f"Modelo de detección: {config.modelo} — {len(nombres_modelo)} clases ({listado})")
+
     linea = ConfiguracionLinea(orientacion=config.orientacion_linea, posicion=config.posicion_linea)
     inspector = InspectorBotellas() if args.inspeccion else None
     valvula = ValvulaDescarte(
@@ -336,6 +392,14 @@ def main() -> None:
     servir_tablero = args.tablero or args.abrir_navegador
     if servir_tablero:
         estado = EstadoTablero()
+        # El aviso también en la pantalla: el operario de la línea no mira la
+        # consola, y este es justo el error que lo deja sin detección de partes.
+        if aviso_modelo is not None:
+            estado.agregar_evento("estado", f"⚠ {aviso_modelo}")
+        else:
+            estado.agregar_evento(
+                "estado", f"Modelo cargado: {config.modelo} ({len(nombres_modelo)} clases)"
+            )
         carpeta_registro = None if args.sin_registro else args.registro
         iniciar_tablero(estado, config.puerto, carpeta_registro=carpeta_registro)
         print(f"\nTablero de control disponible en:")

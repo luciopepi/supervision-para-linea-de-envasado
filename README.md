@@ -290,6 +290,19 @@ la HMI con **⬇ DESCARGAR CSV**, que lista los días disponibles y baja el que
 elijas — también desde otra computadora de la red. Y siempre podés copiar las
 carpetas directamente con el explorador de Windows a un pendrive o disco.
 
+### Si detecta las botellas pero no las tapas ni las etiquetas
+
+Casi siempre es que quedó cargado el **modelo de fábrica** (`yolov8n.pt`),
+que solo conoce la clase "botella". El modelo propio de partes hay que
+elegirlo: **⚙ → "Modelo de detección"** → `modelos\detector_partes.pt`, y
+volver a abrir la aplicación (ese ajuste se lee al arrancar).
+
+El sistema ayuda a darse cuenta: al arrancar imprime en la consola qué
+modelo cargó y cuántas clases tiene, y si encuentra un detector entrenado en
+`modelos/` mientras corre con el de fábrica, deja un aviso en la consola y en
+los eventos de la pantalla. En el primer arranque, si ya hay un
+`modelos/detector_partes.pt`, lo toma solo.
+
 ### Si la cámara se ve entrecortada o en baja resolución
 
 - La resolución se pide con `--resolucion 1280x720` (por defecto). Si la

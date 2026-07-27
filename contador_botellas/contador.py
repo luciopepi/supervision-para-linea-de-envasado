@@ -39,7 +39,7 @@ from .partes import (
 from .registro import RegistroProduccion
 from .salidas import ValvulaDescarte
 from .tablero import EstadoTablero
-from .velocidad import EstimadorVelocidad
+from .velocidad import EstimadorVelocidad, MedidorCuadros
 
 
 @dataclass
@@ -295,6 +295,7 @@ class ContadorBotellas:
             track_activation_threshold=self.config.confianza,
         )
         velocidad = EstimadorVelocidad(ventana_segundos=self.ventana_velocidad)
+        medidor = MedidorCuadros()
 
         # Con un modelo propio de partes, el detector entrega todas sus
         # clases juntas: acá se decide cuál es la "clase principal" que va al
@@ -456,7 +457,11 @@ class ContadorBotellas:
                         detecciones_partes, nombres_clases,
                         anotador_partes, anotador_partes_etiquetas,
                     )
+                    # Se mide acá, con la detección ya hecha: es el ritmo real
+                    # al que la computadora analiza la línea.
+                    medidor.registrar_cuadro()
                 else:
+                    medidor.reiniciar()
                     ultimas_detecciones = None
                     cuadro = self._anotar_pausa(cuadro)
                     if not en_vivo:
@@ -480,7 +485,7 @@ class ContadorBotellas:
                     self._publicar(
                         estado_tablero, cuadro, velocidad, ultimas_detecciones,
                         detectando, defectos_total, instante, ultimo_cruce,
-                        cajas_completas, cajas_incompletas,
+                        cajas_completas, cajas_incompletas, medidor.cuadros_por_segundo(),
                     )
                 if mostrar:
                     cv2.imshow("Contador de botellas", cuadro)
@@ -896,6 +901,7 @@ class ContadorBotellas:
         ultimo_cruce: float | None,
         cajas_completas: int = 0,
         cajas_incompletas: int = 0,
+        cuadros_por_segundo: float = 0.0,
     ) -> None:
         """Publica el cuadro anotado y las estadísticas para el tablero web."""
         ok_jpeg, jpeg = cv2.imencode(
@@ -924,6 +930,7 @@ class ContadorBotellas:
             "skus": self._listar_skus(),
             "valvula": valvula_info,
             "segundos_sin_cruce": round(sin_cruce, 1),
+            "cuadros_por_segundo": round(cuadros_por_segundo, 1),
             "hora": time.time(),
             "modo": self.modo,
             "config": como_dict(self.config),

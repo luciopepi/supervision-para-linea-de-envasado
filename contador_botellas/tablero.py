@@ -262,6 +262,7 @@ PAGINA_HTML = """<!doctype html>
     <span class="punto" style="background:var(--serie)"></span><span>SKU: <b id="sku-nombre">general</b> ✎</span></span>
   <span class="chip" id="chip-modo" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>MODO: CAJAS</span></span>
   <span class="chip" id="chip-valvula" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>VÁLVULA SIMULADA</span></span>
+  <span class="chip" id="chip-fps" style="display:none" title="Cuadros por segundo que alcanza a analizar esta computadora"><span class="punto"></span><span id="fps-texto">—</span></span>
   <span class="header-derecha">
     <span class="hora" id="hora">—</span>
     <button class="chip boton-chip" id="btn-config-header" title="Configuración del sistema">⚙</button>
@@ -671,6 +672,16 @@ async function actualizar() {
       texto.textContent = "PRODUCIENDO"; punto.style.background = "var(--ok)";
     } else { texto.textContent = "SIN PRODUCCIÓN"; punto.style.background = "var(--critico)"; }
     $("chip-valvula").style.display = (d.valvula && d.valvula.simulada) ? "" : "none";
+    // Cuadros por segundo: dice si la computadora da abasto. Por debajo de 5
+    // el seguidor empieza a perder botellas rápidas, así que se pinta en rojo
+    // para que se vea sin tener que interpretar el número.
+    const fps = d.cuadros_por_segundo ?? 0;
+    $("chip-fps").style.display = (detectando && fps > 0) ? "" : "none";
+    if (detectando && fps > 0) {
+      $("fps-texto").textContent = fps.toFixed(1) + " cuadros/s";
+      const colorFps = fps >= 10 ? "var(--ok)" : (fps >= 5 ? "var(--alerta)" : "var(--critico)");
+      $("chip-fps").querySelector(".punto").style.background = colorFps;
+    }
     historial = (d.historial || []).slice(-900);
     dibujar();
     pintarEventos(d.eventos || []);

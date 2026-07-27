@@ -35,11 +35,22 @@ class ConfiguracionAjustable:
     valvula_duracion_ms: int = 300
     botellas_por_caja: int = 6
     calidad_video: int = 75
+    # Campos que solo se leen al arrancar (ver `REQUIERE_REINICIO`): son los
+    # que hacen que la aplicación se pueda usar con doble clic en el ícono,
+    # sin escribir nada en una consola.
+    fuente: str = "0"
+    modelo: str = "yolov8n.pt"
+    resolucion_camara: str = "1280x720"
+    modo: str = "linea"
+    puerto: int = 8000
+    valvula_puerto_serie: str = ""
 
 
 # Rango, paso y opciones fijas de cada campo: la HMI los usa para armar los
 # botones +/- (o las opciones fijas) del modal de configuración, y `validar`
 # los usa para clampear cualquier valor recibido (del archivo o de la HMI).
+# `texto` marca los campos de texto libre (rutas, puertos COM, URL de un
+# celular usado como cámara): la HMI los edita con el teclado en pantalla.
 LIMITES: dict[str, dict[str, Any]] = {
     "posicion_linea": {"min": 0.05, "max": 0.95, "paso": 0.05},
     "orientacion_linea": {"opciones": ["vertical", "horizontal"]},
@@ -49,7 +60,30 @@ LIMITES: dict[str, dict[str, Any]] = {
     "valvula_duracion_ms": {"min": 50, "max": 3000, "paso": 50},
     "botellas_por_caja": {"min": 1, "max": 24, "paso": 1},
     "calidad_video": {"min": 40, "max": 95, "paso": 5},
+    "fuente": {"texto": True},
+    "modelo": {"texto": True},
+    "resolucion_camara": {"opciones": ["640x480", "800x600", "1280x720", "1920x1080"]},
+    "modo": {"opciones": ["linea", "caja"]},
+    "puerto": {"min": 1024, "max": 65535, "paso": 1},
+    "valvula_puerto_serie": {"texto": True, "vacio_ok": True},
 }
+
+# Campos que el pipeline lee una sola vez, al arrancar: la cámara, el modelo
+# YOLO, el servidor web y el modo de trabajo se montan antes del primer
+# cuadro. Cambiarlos desde la HMI los guarda en el archivo, pero recién
+# tienen efecto al volver a abrir la aplicación; la HMI lo avisa en pantalla.
+REQUIERE_REINICIO: tuple[str, ...] = (
+    "fuente",
+    "modelo",
+    "resolucion_camara",
+    "modo",
+    "puerto",
+    "valvula_puerto_serie",
+)
+
+# Tope de los campos de texto: una ruta de Windows o una URL entran de sobra,
+# y evita que un archivo corrupto meta un texto gigante en la pantalla.
+MAXIMO_TEXTO = 300
 
 # Tipo de cada campo, para castear antes de clampear en `validar`.
 _TIPOS: dict[str, type] = {campo.name: campo.type for campo in fields(ConfiguracionAjustable)}
@@ -58,22 +92,33 @@ _TIPOS: dict[str, type] = {campo.name: campo.type for campo in fields(Configurac
 def validar(clave: str, valor: Any) -> Any:
     """Castea y clampea `valor` para el campo `clave` de `ConfiguracionAjustable`.
 
-    Clave desconocida → `ValueError`. Para los campos numéricos con rango
-    (`min`/`max`) se castea al tipo del campo y se recorta al límite más
-    cercano. Para los campos de opciones fijas: `orientacion_linea` solo
-    acepta "vertical" u "horizontal" (si no, `ValueError`, porque no hay un
-    "valor más cercano" sensato para un texto); `tamano_inferencia` se ajusta
-    a la opción numérica fija más cercana.
+    Clave desconocida → `ValueError`. Los campos de texto (`texto` en
+    `LIMITES`) se limpian de espacios y se rechazan vacíos salvo que tengan
+    `vacio_ok` (el puerto COM vacío significa "válvula simulada"). Los campos
+    de opciones fijas de texto (`orientacion_linea`, `modo`,
+    `resolucion_camara`) solo aceptan una de sus opciones: no hay un "valor
+    más cercano" sensato para un texto. Los de opciones numéricas
+    (`tamano_inferencia`) se ajustan a la opción más cercana, y los numéricos
+    con rango se recortan al límite más cercano.
     """
     if clave not in LIMITES:
         raise ValueError(f"Configuración desconocida: '{clave}'")
     limites = LIMITES[clave]
 
-    if clave == "orientacion_linea":
+    if limites.get("texto"):
+        texto = str(valor).strip()
+        if not texto and not limites.get("vacio_ok"):
+            raise ValueError(f"'{clave}' no puede quedar vacío")
+        if len(texto) > MAXIMO_TEXTO:
+            raise ValueError(f"'{clave}' es demasiado largo (máximo {MAXIMO_TEXTO} caracteres)")
+        return texto
+
+    opciones = limites.get("opciones")
+    if opciones and isinstance(opciones[0], str):
         valor_normalizado = str(valor).strip().lower()
-        if valor_normalizado not in limites["opciones"]:
+        if valor_normalizado not in opciones:
             raise ValueError(
-                f"orientacion_linea debe ser 'vertical' u 'horizontal' "
+                f"'{clave}' debe ser una de estas opciones: {', '.join(opciones)} "
                 f"(se recibió: '{valor}')"
             )
         return valor_normalizado
@@ -155,11 +200,29 @@ def guardar(config: ConfiguracionAjustable, ruta: str | Path) -> None:
         print(f"Aviso: no se pudo guardar la configuración en '{ruta}' ({error}).")
 
 
+def par_resolucion(texto: str) -> tuple[int, int]:
+    """Convierte una resolución "1280x720" en el par de enteros (1280, 720).
+
+    Un texto con otro formato no interrumpe el arranque: se avisa por consola
+    y se cae al valor por defecto de la dataclass, porque quedarse sin cámara
+    por un typo en el archivo sería peor que usar una resolución distinta.
+    """
+    try:
+        ancho, alto = (int(parte) for parte in str(texto).lower().split("x"))
+    except ValueError:
+        defecto = ConfiguracionAjustable.resolucion_camara
+        print(f"Aviso: resolución '{texto}' inválida; se usa {defecto}.")
+        ancho, alto = (int(parte) for parte in defecto.split("x"))
+    return ancho, alto
+
+
 def como_dict(config: ConfiguracionAjustable) -> dict[str, Any]:
     """Arma el dict que consume la HMI para pintar el modal de configuración.
 
-    Devuelve `{"valores": {...}, "limites": {...}}`: los valores vigentes de
-    cada campo y, para cada uno, su mínimo/máximo/paso u opciones fijas —
-    así el JavaScript arma los controles sin tener los límites hardcodeados.
+    Devuelve `{"valores": {...}, "limites": {...}, "reinicio": [...]}`: los
+    valores vigentes de cada campo, para cada uno su mínimo/máximo/paso u
+    opciones fijas, y la lista de campos que recién se aplican al reiniciar
+    — así el JavaScript arma los controles y sus avisos sin tener nada de
+    esto hardcodeado.
     """
-    return {"valores": asdict(config), "limites": LIMITES}
+    return {"valores": asdict(config), "limites": LIMITES, "reinicio": list(REQUIERE_REINICIO)}

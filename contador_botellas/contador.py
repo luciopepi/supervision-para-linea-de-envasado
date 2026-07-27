@@ -18,7 +18,13 @@ from .clasificador import (
     contar_muestras,
     entrenar_en_hilo,
 )
-from .configuracion import ConfiguracionAjustable, como_dict, guardar, validar
+from .configuracion import (
+    REQUIERE_REINICIO,
+    ConfiguracionAjustable,
+    como_dict,
+    guardar,
+    validar,
+)
 from .detecciones import RegistroDetecciones
 from .detector import DetectorBotellas
 from .inspeccion import InspectorBotellas
@@ -599,6 +605,11 @@ class ContadorBotellas:
         error. Si es válido, actualiza `self.config`, aplica el cambio al
         componente correspondiente y persiste la configuración completa en
         `self.ruta_config`.
+
+        Los ajustes de `REQUIERE_REINICIO` (cámara, modelo, resolución, modo,
+        puerto del tablero, COM de la válvula) se guardan igual, pero recién
+        toman efecto al volver a abrir la aplicación: el evento que queda en
+        la HMI lo aclara para que el operario no crea que no funcionó.
         """
         try:
             valor_normalizado = validar(clave, valor)
@@ -640,7 +651,10 @@ class ContadorBotellas:
             self.calidad_video = valor_normalizado
 
         guardar(self.config, self.ruta_config)
-        estado.agregar_evento("configuracion", f"Configuración: {clave} → {valor_normalizado}")
+        aviso = " — se aplica al reiniciar la aplicación" if clave in REQUIERE_REINICIO else ""
+        estado.agregar_evento(
+            "configuracion", f"Configuración: {clave} → {valor_normalizado}{aviso}"
+        )
 
     def _iniciar_entrenamiento(self, estado: EstadoTablero, detectando: bool) -> bool:
         """Lanza el entrenamiento del clasificador en segundo plano.

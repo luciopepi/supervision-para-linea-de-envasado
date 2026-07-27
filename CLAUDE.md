@@ -45,9 +45,14 @@ sobre la línea, así que el máximo contable es **25**. La referencia
 histórica "23" estaba mal validada. Con el filtro de confianza aplicado
 antes del tracker el sistema contaba 22 (ultralytics 8.4.92 + supervision
 0.29.1, versiones hoy pinneadas en requirements.txt); tras mover el filtro
-al `track_activation_threshold` de ByteTrack el conteo esperado es cercano
-a 25 — validar siempre en la PC del usuario: en el sandbox de Claude no se
-puede descargar `yolov8n.pt`, así que esta prueba solo corre allá.
+al `track_activation_threshold` de ByteTrack se esperaba llegar cerca de 25.
+
+**Medición real (2026-07, en el sandbox): 23.** Quedan 2 botellas sin
+contar contra el máximo de 25: es la precisión actual del modelo COCO, no
+una regresión. Usar 23 como línea de base al comparar cambios del pipeline.
+El sandbox **sí** descarga `yolov8n.pt` y corre esta prueba (la nota vieja
+que decía lo contrario era falsa): ante cualquier duda de regresión,
+correr el video en un `git worktree` del commit anterior y comparar.
 
 Todo cambio en la HMI se verifica con captura de pantalla (Playwright con
 Chromium) antes de entregar. Todo cambio en el pipeline se corre contra los

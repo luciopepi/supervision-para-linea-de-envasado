@@ -33,7 +33,32 @@ de conteo).
 
 ---
 
-## Instalación
+## Instalación en Windows (la PC de la planta)
+
+Pensado para que el operario no toque nunca una consola.
+
+1. Copiar toda esta carpeta a la computadora (por ejemplo a `C:\contador`).
+   Sirve un pendrive: no hace falta que la máquina tenga el proyecto de antes.
+2. Tener instalado [Python 3.10 o superior](https://www.python.org/downloads/).
+   **Al instalarlo, tildar "Add Python to PATH".**
+3. Doble clic en **`INSTALAR.bat`**. Prepara todo y deja el ícono
+   **"Contador de Botellas"** en el Escritorio (tarda unos minutos la primera
+   vez: descarga las librerías de visión).
+4. Doble clic en el ícono del Escritorio. Se abre la aplicación y **el tablero
+   aparece solo en el navegador**.
+
+De ahí en más, todo se configura desde el **engranaje ⚙** arriba a la derecha
+de la pantalla: cámara, modelo, resolución, tiempos de la válvula. No hace
+falta volver a escribir comandos.
+
+> La ventana negra que queda abierta es el motor de la aplicación: hay que
+> dejarla ahí mientras se use. Cerrarla cierra el sistema.
+
+Para llevar el sistema a otra computadora (por ejemplo la pantalla táctil de
+la línea), se copia la carpeta entera y se repiten los pasos 2 a 4. Conviene
+copiar también `modelos/` (los modelos entrenados) y `configuracion.json`.
+
+## Instalación manual (Linux/Mac, o para desarrollar)
 
 Requiere Python 3.10 o superior.
 
@@ -105,13 +130,17 @@ Duración procesada: 12.6 s
 
 ### Opciones principales
 
+Todos los flags son opcionales: sin ninguno, el sistema arranca con lo que
+diga `configuracion.json` (lo que el operario dejó puesto desde la pantalla).
+
 | Opción | Por defecto | Descripción |
 |---|---|---|
-| `--fuente` | (obligatoria) | Cámara (`0`), archivo `.mp4` o URL `rtsp://` |
+| `--fuente` | `0` (o la del archivo) | Cámara (`0`), archivo `.mp4`, URL `rtsp://` o `http://` de un celular |
 | `--modelo` | `yolov8n.pt` | Modelo YOLO; usar el propio cuando esté entrenado |
-| `--confianza` | `0.3` | Confianza mínima de detección |
+| `--confianza` | `0.25` | Confianza mínima de detección |
 | `--linea` | `vertical` | Orientación de la línea de conteo |
-| `--posicion-linea` | `0.5` | Posición de la línea (fracción del cuadro, 0 a 1) |
+| `--posicion-linea` | `0.25` | Posición de la línea (fracción del cuadro, 0 a 1) |
+| `--abrir-navegador` | — | Abre el tablero en el navegador al arrancar (implica `--tablero`); es lo que usa el ícono del Escritorio |
 | `--ventana-velocidad` | `30` | Segundos para la velocidad instantánea |
 | `--salida` | — | Video anotado de salida |
 | `--csv` | — | CSV con estadísticas por cuadro |
@@ -128,7 +157,7 @@ Duración procesada: 12.6 s
 | `--sin-detecciones` | — | No guardar fotos de defectos para auditoría |
 | `--modo` | `linea` | `linea` (contar botellas cruzando la línea) o `caja` (contar botellas por caja; ver [Detección de partes y modo caja](#detección-de-partes-y-modo-caja-en-preparación)) |
 | `--botellas-por-caja` | `6` | Botellas que debe traer cada caja completa (solo `--modo caja`) |
-| `--config` | `configuracion.json` | Archivo con los ajustes editables desde la HMI (ver [Pantalla de configuración](#pantalla-de-configuración)). Si existe, sus valores **ganan** sobre los flags de arriba para esos mismos campos |
+| `--config` | `configuracion.json` | Archivo con los ajustes editables desde la HMI (ver [Pantalla de configuración](#pantalla-de-configuración)). Precedencia: valores por defecto < archivo < flag escrito a mano. Si no existe, se crea al arrancar |
 | `--clases-defecto` | — | Clases del modelo propio que disparan el descarte |
 | `--valvula-puerto` | — | Puerto serie del relé (ej. `COM3`); sin él, modo simulado |
 | `--valvula-retardo` | `500` | ms entre el cruce de línea y el soplido |
@@ -164,10 +193,12 @@ un acceso directo de Chrome/Edge con `--kiosk http://localhost:8000`.
 
 ### Pantalla de configuración
 
-Tocando **⚙ CONFIGURACIÓN** se abre un modal con los parámetros que el
-operario puede ajustar sin tocar el `cmd`, cada uno con botones táctiles
-grandes (`−`/`+`, o botones de opción fija para orientación y tamaño de
-imagen):
+Se abre con el **engranaje ⚙ de arriba a la derecha** (siempre visible) o con
+el botón **⚙ CONFIGURACIÓN** de la botonera. Todo se ajusta con botones
+táctiles grandes (`−`/`+`, opciones fijas, o teclado en pantalla para las
+rutas), sin tocar nunca el `cmd`. Vienen en dos grupos:
+
+**Ajustes de producción** — se aplican *en caliente*, sin reiniciar:
 
 - **Posición de la línea de conteo** — se ve en vivo en el video: cada toque
   mueve la línea dibujada al instante.
@@ -177,19 +208,28 @@ imagen):
   fluido en CPU).
 - **Retardo del soplido** y **Duración del soplido** (ms) de la válvula de
   descarte.
-- **Botellas por caja** (solo tiene efecto en `--modo caja`).
+- **Botellas por caja** (solo tiene efecto en modo caja).
 - **Calidad del video en pantalla** (calidad JPEG del stream de la HMI: más
   baja = más fluido con una red Wi-Fi floja).
 
-Cada ajuste se aplica **en caliente** (sin reiniciar el programa) y queda
-guardado en el archivo `--config` (por defecto `configuracion.json`, junto
-al programa). **Regla de precedencia**: al arrancar, si ese archivo ya
-existe, sus valores ganan sobre los flags de la línea de comandos para esos
-mismos campos; los flags solo definen el primer arranque (cuando el archivo
-todavía no existe) y lo que el archivo no traiga. En la práctica: la primera
-vez arrancás con los flags que quieras, y de ahí en adelante los ajustes que
-haga el operario desde la pantalla persisten solos, aunque cierres y abras
-el programa de nuevo con los flags de siempre.
+**Equipo** — se guardan al instante pero toman efecto **al reiniciar** la
+aplicación (la pantalla los marca con un cartelito `al reiniciar`), porque la
+cámara, el modelo y el servidor web se montan una sola vez al arrancar:
+
+- **Cámara o video**: `0` para la webcam de la PC (o `1`, `2` si hay varias),
+  la dirección `http://…` de un celular usado como cámara, o la ruta de un
+  `.mp4`.
+- **Modelo de detección**: la ruta del `.pt` (por ejemplo
+  `modelos\detector_partes.pt`).
+- **Resolución de la cámara**, **Modo de trabajo** (línea o cajas), **Puerto
+  del tablero web** y **Puerto COM de la válvula** (vacío = simulada).
+
+Todo queda guardado en el archivo `--config` (por defecto
+`configuracion.json`, junto al programa), así que sobrevive al reinicio.
+**Regla de precedencia** al arrancar: valores por defecto < lo que diga el
+archivo < un flag escrito a mano en esa corrida. En la práctica: el operario
+ajusta desde la pantalla y eso queda; y si alguna vez hace falta una prueba
+puntual sin tocar nada, `--modelo otro.pt` sigue ganando por esa única vez.
 
 ### La válvula de descarte
 
@@ -286,6 +326,10 @@ contador_botellas/
 ├── inspeccion.py   → inspección de defectos (experimental / punto de extensión)
 ├── partes.py       → clases de partes de botella/caja para el futuro detector propio
 └── fotogramas.py   → extrae fotogramas de videos/ para armar el dataset de detección
+INSTALAR.bat        → instalación en Windows + ícono en el Escritorio
+CONTADOR.bat        → arranca la aplicación y abre el tablero en el navegador
+contador.ico        → ícono del acceso directo (se regenera con herramientas/)
+herramientas/       → utilidades del proyecto (por ahora, el generador del ícono)
 videos/             → videos de prueba de líneas de envasado
 ```
 

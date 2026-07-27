@@ -97,10 +97,14 @@ PAGINA_HTML = """<!doctype html>
     --serie: #3987e5; --ok: #0ca30c; --alerta: #fab219; --critico: #d03b3b;
   }
   * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; }
+  html { height: 100%; }
+  /* `min-height` (y no `height`) para que la página CREZCA y se pueda
+     desplazar cuando no entra: en una pantalla baja o en un celular, con
+     altura fija la fila de botones —y con ella CONFIGURACIÓN— quedaba
+     cortada abajo, fuera de alcance y sin barra de scroll. */
   body { background: var(--plano); color: var(--tinta); display: flex; flex-direction: column;
-         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px; gap: 12px;
-         user-select: none; }
+         min-height: 100%; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         padding: 12px; gap: 12px; user-select: none; }
   header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   header h1 { font-size: 20px; font-weight: 700; letter-spacing: .02em; }
   .chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px;
@@ -111,8 +115,18 @@ PAGINA_HTML = """<!doctype html>
   #chip-sku { font-size: 24px; padding: 12px 24px; border-color: rgba(57,135,229,0.55); }
   #chip-sku .punto { width: 14px; height: 14px; }
   #chip-sku b { color: var(--serie); text-transform: uppercase; letter-spacing: .02em; }
-  .hora { margin-left: auto; color: var(--tinta-2); font-size: 22px; font-weight: 600;
+  .hora { color: var(--tinta-2); font-size: 22px; font-weight: 600;
           font-variant-numeric: tabular-nums; }
+  /* Reloj y engranaje viajan juntos: al angostarse la pantalla el encabezado
+     se parte en dos filas y así el engranaje sigue arriba a la derecha en vez
+     de quedar descolgado a la izquierda. */
+  .header-derecha { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  /* Engranaje siempre visible arriba a la derecha: el botón CONFIGURACIÓN de
+     la botonera puede quedar más abajo que el borde de la pantalla. */
+  .boton-chip { cursor: pointer; background: var(--superficie-2); color: var(--tinta);
+                font-size: 24px; min-height: 48px; min-width: 58px; justify-content: center;
+                font-family: inherit; }
+  .boton-chip:active { filter: brightness(1.3); transform: scale(0.96); }
   .rejilla { display: grid; grid-template-columns: minmax(0, 3fr) minmax(230px, 1fr);
              gap: 12px; flex: 1; min-height: 0; }
   @media (max-width: 900px) { .rejilla { grid-template-columns: 1fr; } }
@@ -191,11 +205,15 @@ PAGINA_HTML = """<!doctype html>
      grandes (mínimo 56px de lado) para no ajustes por error con el dedo. */
   .lista-config { overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
                   max-height: 62vh; }
+  /* `flex-wrap` + un ancho mínimo para la etiqueta: en las filas con varias
+     opciones (resolución, tamaño de imagen) los botones bajan a un renglón
+     propio en vez de aplastar el texto hasta partirlo letra por letra. */
   .fila-config { display: flex; align-items: center; justify-content: space-between;
-                 gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--grilla); }
+                 flex-wrap: wrap; gap: 10px 14px; padding: 12px 4px;
+                 border-bottom: 1px solid var(--grilla); }
   .fila-config:last-child { border-bottom: none; }
   .etiqueta-config { font-size: 15px; font-weight: 600; color: var(--tinta-2);
-                      flex: 1 1 auto; min-width: 0; line-height: 1.25; }
+                      flex: 1 1 190px; min-width: 170px; line-height: 1.25; }
   .controles-config { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
                        justify-content: flex-end; flex: 0 0 auto; }
   .btn-paso-config { width: 56px; height: 56px; border-radius: 10px; border: 1px solid var(--borde);
@@ -209,6 +227,31 @@ PAGINA_HTML = """<!doctype html>
     font-size: 15px; font-weight: 800; cursor: pointer; font: inherit; }
   .btn-opcion-config.activo { border-color: var(--serie); color: var(--tinta);
                                background: rgba(57,135,229,0.18); }
+  /* Los campos de texto (cámara, modelo, COM) se editan con el teclado en
+     pantalla: el botón muestra el valor actual y hay que poder leerlo entero. */
+  .btn-texto-config { max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+                      white-space: nowrap; font-size: 14px; text-align: center; }
+  .marca-reinicio { display: inline-block; margin-left: 8px; padding: 2px 8px; font-size: 11px;
+                    font-weight: 700; border-radius: 999px; background: #4a3a14; color: #ffd98a;
+                    vertical-align: middle; }
+  .nota-config { color: var(--tenue); font-size: 13px; line-height: 1.35; }
+  .titulo-grupo-config { padding: 16px 4px 6px; font-size: 12px; font-weight: 800;
+                         letter-spacing: .08em; text-transform: uppercase; color: var(--tenue);
+                         border-bottom: 1px solid var(--grilla); }
+  /* Pantallas bajas (panel táctil de 1024x600, notebooks de 1366x768): se
+     compacta todo para que la fila de botones entre sin desplazar la página;
+     el gráfico y los eventos quedan abajo, a un dedo de distancia. */
+  @media (max-height: 780px) {
+    header h1 { font-size: 17px; }
+    .chip { padding: 6px 12px; font-size: 14px; }
+    #chip-sku { font-size: 19px; padding: 8px 16px; }
+    .hora { font-size: 18px; }
+    .boton-chip { font-size: 21px; min-height: 42px; min-width: 52px; }
+    .video { min-height: 170px; }
+    .ficha .valor { font-size: clamp(26px, 3.4vw, 40px); }
+    button.grande { min-height: 62px; font-size: 17px; }
+    .abajo { min-height: 170px; }
+  }
 </style>
 </head>
 <body>
@@ -219,7 +262,10 @@ PAGINA_HTML = """<!doctype html>
     <span class="punto" style="background:var(--serie)"></span><span>SKU: <b id="sku-nombre">general</b> ✎</span></span>
   <span class="chip" id="chip-modo" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>MODO: CAJAS</span></span>
   <span class="chip" id="chip-valvula" style="display:none"><span class="punto" style="background:var(--alerta)"></span><span>VÁLVULA SIMULADA</span></span>
-  <span class="hora" id="hora">—</span>
+  <span class="header-derecha">
+    <span class="hora" id="hora">—</span>
+    <button class="chip boton-chip" id="btn-config-header" title="Configuración del sistema">⚙</button>
+  </span>
 </header>
 
 <div class="rejilla">
@@ -285,6 +331,9 @@ PAGINA_HTML = """<!doctype html>
 <div id="modal-config" class="overlay" style="display:none">
   <div class="modal-tarjeta">
     <h2>Configuración del sistema</h2>
+    <div class="nota-config">Cada cambio se guarda solo en el equipo (configuracion.json).
+      Los marcados <span class="marca-reinicio">al reiniciar</span> toman efecto la próxima
+      vez que abras la aplicación.</div>
     <div class="lista-config" id="lista-config">—</div>
     <div class="modal-botones" style="grid-template-columns: 1fr;">
       <button class="grande" id="btn-config-cerrar">CERRAR</button>
@@ -421,10 +470,34 @@ const NOMBRE_CONFIG = {
   valvula_duracion_ms: "Duración del soplido (ms)",
   botellas_por_caja: "Botellas por caja",
   calidad_video: "Calidad del video en pantalla",
+  // De acá para abajo, los que se leen al arrancar (config.reinicio).
+  fuente: "Cámara o video (0 = webcam, o una dirección http:// del celular)",
+  modelo: "Modelo de detección (.pt)",
+  resolucion_camara: "Resolución de la cámara",
+  modo: "Modo de trabajo (línea o cajas)",
+  puerto: "Puerto del tablero web",
+  valvula_puerto_serie: "Puerto COM de la válvula (vacío = simulada)",
 };
 const ORDEN_CONFIG = Object.keys(NOMBRE_CONFIG);
-let config = {valores: {}, limites: {}};
+// Texto de ayuda del teclado en pantalla, por campo de texto libre.
+const AYUDA_TEXTO_CONFIG = {
+  fuente: "Cámara o video:\\n  0 = webcam de esta PC (probá 1 o 2 si hay varias)\\n" +
+          "  http://192.168.1.50:8080/video = celular con IP Webcam\\n" +
+          "  videos\\\\prueba.mp4 = un archivo de video",
+  modelo: "Ruta del modelo YOLO (.pt):\\n  modelos\\\\detector_partes.pt = tu modelo entrenado\\n" +
+          "  yolov8n.pt = el modelo de fábrica (solo botellas)",
+  valvula_puerto_serie: "Puerto COM del relé de la válvula (ej: COM3).\\n" +
+                        "Dejalo vacío para trabajar en modo simulado.",
+};
+let config = {valores: {}, limites: {}, reinicio: []};
 let ultimoHtmlConfig = null;
+
+function escaparHtml(texto) {
+  // Los valores de texto (rutas, URL) van al HTML: se escapan para que un
+  // caracter como < no rompa la pantalla de configuración.
+  return String(texto).replace(/[&<>"']/g, c =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+}
 
 function formatoValorConfig(clave, valor) {
   // posicion_linea y confianza son fracciones (0-1): dos decimales se leen
@@ -437,27 +510,48 @@ function pintarConfigModal() {
   const contenedor = $("lista-config");
   const valores = config.valores || {};
   const limites = config.limites || {};
+  const reinicio = config.reinicio || [];
+  // La lista se parte en dos grupos (lo que se toca en producción y lo que
+  // se define una vez en el equipo): con 14 filas, un título cada tanto es
+  // lo que hace entender de un vistazo que la lista sigue más abajo.
+  let grupoActual = null;
   const html = ORDEN_CONFIG.filter(clave => clave in valores).map(clave => {
     const lim = limites[clave] || {};
     const valor = valores[clave];
     let controles;
-    if (clave === "orientacion_linea") {
-      controles = ["vertical", "horizontal"].map(opcion =>
-        `<button class="btn-opcion-config${valor === opcion ? " activo" : ""}" ` +
-        `data-clave="${clave}" data-valor="${opcion}">${opcion.toUpperCase()}</button>`
-      ).join("");
-    } else if (clave === "tamano_inferencia") {
-      controles = (lim.opciones || []).map(opcion =>
-        `<button class="btn-opcion-config${valor === opcion ? " activo" : ""}" ` +
-        `data-clave="${clave}" data-valor="${opcion}">${opcion}</button>`
-      ).join("");
+    if (lim.texto) {
+      const mostrado = String(valor ?? "").trim() || "(vacío)";
+      controles = `<button class="btn-opcion-config btn-texto-config" data-clave="${clave}" ` +
+                  `data-texto="1">${escaparHtml(mostrado)}</button>`;
+    } else if (lim.opciones) {
+      // Sirve igual para las opciones de texto (orientación, modo,
+      // resolución) y las numéricas (tamaño de imagen).
+      controles = lim.opciones.map(opcion => {
+        // Mayúsculas solo en las opciones de una palabra (VERTICAL, CAJA):
+        // una resolución se lee mejor como "1280x720" que como "1280X720".
+        const texto = typeof opcion === "string" && !/[0-9]/.test(opcion)
+          ? opcion.toUpperCase() : opcion;
+        return `<button class="btn-opcion-config${valor === opcion ? " activo" : ""}" ` +
+               `data-clave="${clave}" data-valor="${escaparHtml(opcion)}">` +
+               `${escaparHtml(texto)}</button>`;
+      }).join("");
     } else {
       controles =
         `<button class="btn-paso-config" data-clave="${clave}" data-signo="-1">−</button>` +
         `<span class="valor-config">${formatoValorConfig(clave, valor)}</span>` +
         `<button class="btn-paso-config" data-clave="${clave}" data-signo="1">+</button>`;
     }
-    return `<div class="fila-config"><div class="etiqueta-config">${NOMBRE_CONFIG[clave]}</div>` +
+    const esDeEquipo = reinicio.includes(clave);
+    const marca = esDeEquipo ? '<span class="marca-reinicio">al reiniciar</span>' : "";
+    let titulo = "";
+    if (esDeEquipo !== grupoActual) {
+      grupoActual = esDeEquipo;
+      titulo = `<div class="titulo-grupo-config">` +
+               (esDeEquipo ? "Equipo — se aplican al reiniciar" : "Ajustes de producción") +
+               `</div>`;
+    }
+    return titulo + `<div class="fila-config">` +
+           `<div class="etiqueta-config">${NOMBRE_CONFIG[clave]}${marca}</div>` +
            `<div class="controles-config">${controles}</div></div>`;
   }).join("");
   // Mismo cuidado que en el modal de SKU: no reconstruir el DOM si no
@@ -481,10 +575,23 @@ function pintarConfigModal() {
   contenedor.querySelectorAll(".btn-opcion-config").forEach(boton => {
     boton.addEventListener("click", () => {
       const clave = boton.dataset.clave;
-      const valor = clave === "tamano_inferencia" ? Number(boton.dataset.valor) : boton.dataset.valor;
-      enviarConfig(clave, valor);
+      if (boton.dataset.texto) { editarTextoConfig(clave); return; }
+      const opciones = ((config.limites || {})[clave] || {}).opciones || [];
+      const esNumerica = typeof opciones[0] === "number";
+      enviarConfig(clave, esNumerica ? Number(boton.dataset.valor) : boton.dataset.valor);
     });
   });
+}
+
+function editarTextoConfig(clave) {
+  // Teclado en pantalla: en la pantalla táctil de Windows, tocar el campo de
+  // un prompt levanta el teclado virtual, así que no hace falta un teclado
+  // propio dentro de la HMI.
+  const actual = String((config.valores || {})[clave] ?? "");
+  const ayuda = AYUDA_TEXTO_CONFIG[clave] || NOMBRE_CONFIG[clave];
+  const nuevo = prompt(ayuda + "\\n\\nValor actual:", actual);
+  if (nuevo === null) return;
+  enviarConfig(clave, nuevo.trim());
 }
 
 function enviarConfig(clave, valor) {
@@ -499,6 +606,7 @@ function cerrarModalConfig() {
   $("modal-config").style.display = "none";
 }
 $("btn-config").addEventListener("click", abrirModalConfig);
+$("btn-config-header").addEventListener("click", abrirModalConfig);
 $("btn-config-cerrar").addEventListener("click", cerrarModalConfig);
 $("modal-config").addEventListener("click", (evento) => {
   if (evento.target.id === "modal-config") cerrarModalConfig();
@@ -532,7 +640,7 @@ async function actualizar() {
     detectando = !!d.detectando; pintarMarcha();
     skus = d.skus || {};
     if ($("modal-sku").style.display !== "none") pintarSkusModal();
-    config = d.config || {valores: {}, limites: {}};
+    config = d.config || {valores: {}, limites: {}, reinicio: []};
     if ($("modal-config").style.display !== "none") pintarConfigModal();
     const entrenando = !!d.entrenando;
     $("btn-entrenar").disabled = entrenando;
